@@ -1,0 +1,55 @@
+name: Hardware report
+description: Tell us how this crate behaved against your dongle — working or not
+title: "hardware: "
+labels: ["hardware"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        This is the most valuable kind of issue this project receives. Only one
+        dongle and one firmware build have ever been tested, so a report that
+        everything worked is as useful as a report that nothing did — it is the
+        only way the compatibility table becomes true rather than hopeful.
+  - type: input
+    id: dongle
+    attributes:
+      label: Dongle
+      description: Model, and the chip if you know it.
+      placeholder: Sonoff ZBDongle-E (EFR32MG21)
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Firmware and EZSP version
+      description: >-
+        Printed by `cargo run --example startup -- <port>`, and available from
+        `Ncp::stack_version` and `Ncp::version`.
+      placeholder: EmberZNet 7.4.4, EZSP 13, stack version 0x7440
+    validations:
+      required: true
+  - type: dropdown
+    id: outcome
+    attributes:
+      label: What happened
+      options:
+        - Everything worked
+        - Bringup worked, something later did not
+        - It did not get through bringup
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: >-
+        The full output of the `startup` example. `RUST_LOG=debug` adds every
+        EZSP frame in and out, which is what makes a failure diagnosable.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: Host OS, serial path, whether flow control had to change.

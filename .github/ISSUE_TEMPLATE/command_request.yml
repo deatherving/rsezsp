@@ -1,0 +1,42 @@
+name: Command or callback request
+description: An EZSP command or callback you need that is not implemented
+title: "command: "
+labels: ["new command"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Coverage here grows from real need rather than from working through the
+        specification, so the useful part of this request is what you are
+        trying to do — that is what says whether the shape being proposed is
+        the right one.
+  - type: input
+    id: name
+    attributes:
+      label: Command or callback
+      placeholder: getChildData (0x004a)
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: What are you trying to do with it?
+    validations:
+      required: true
+  - type: input
+    id: reference
+    attributes:
+      label: Where the frame layout is documented
+      description: >-
+        Silicon Labs' documentation, or a reference implementation, named. If
+        the encoding differs across EZSP versions, say which versions you know
+        about — several fields change width at 14.
+  - type: dropdown
+    id: hardware
+    attributes:
+      label: Can you test it on a device?
+      options:
+        - "Yes"
+        - "No"
+    validations:
+      required: true

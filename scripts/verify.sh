@@ -30,6 +30,11 @@ step "cargo doc" env RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-de
 # The crate must build without the runtime: the codecs are sans-I/O, and a
 # dependency creeping into them would only show up here.
 step "no-default-features" cargo clippy --all-targets --no-default-features -- -D warnings
+step "tests without the runtime" cargo test --no-default-features
+# Builds the crate from only the files that would be published, and compiles it
+# there. Catches an `exclude` entry that removes something the build needs --
+# invisible locally, because the file is still sitting on disk.
+step "packages for crates.io" cargo package --all-features --allow-dirty
 
 if [[ "$FAST" != "--fast" ]]; then
   # Compile-only. A long campaign is a separate, deliberate activity; a target

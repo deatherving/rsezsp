@@ -1,0 +1,24 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    # tokio-serial is pinned exactly on purpose: it is the layer that touches a
+    # tty, where a wrong default is an uninterruptible hang rather than an
+    # error. Bumping it is a deliberate act with a hardware run behind it, not
+    # something to merge on a green CI badge.
+    ignore:
+      - dependency-name: tokio-serial
+
+  - package-ecosystem: cargo
+    directory: /fuzz
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 2
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

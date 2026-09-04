@@ -1,5 +1,9 @@
 # rsezsp
 
+[![CI](https://github.com/deatherving/rsezsp/actions/workflows/ci.yml/badge.svg)](https://github.com/deatherving/rsezsp/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Rust 1.90+](https://img.shields.io/badge/rust-1.90%2B-orange.svg)](https://www.rust-lang.org)
+
 **rsezsp is a hardware-driven Rust implementation of Silicon Labs EZSP for Ember NCP devices.**
 
 The project intentionally implements EZSP incrementally. Command coverage is
@@ -22,6 +26,87 @@ EZSP codec + correlation       ezsp::codec, ezsp::frame, ezsp::correlation
 
 This crate owns the host-to-NCP conversation and nothing above it. No ZCL, no
 ZDO interview logic, no device definitions, no MQTT.
+
+## Using it
+
+```toml
+[dependencies]
+rsezsp = "0.1"
+```
+
+```rust
+use rsezsp::Ncp;
+use rsezsp::ezsp::command::GetEui64;
+use rsezsp::transport::serial::{SerialSettings, SerialTransport};
+
+let transport = SerialTransport::open("/dev/ttyUSB0", SerialSettings::default())?;
+let mut ncp = Ncp::connect(transport).await?;
+
+println!("EZSP {}, firmware {:#06x}", ncp.version(), ncp.stack_version());
+
+let response = ncp.command(GetEui64).await?;
+println!("coordinator {}", response.eui64);
+```
+
+`Ncp::connect` does the ASH reset handshake and EZSP version negotiation, and
+from then on every field width follows the negotiated version. Callbacks arrive
+out of band — `ncp.poll(timeout)` reads them without issuing a command.
+
+Try it against your own dongle:
+
+```bash
+cargo run --example startup -- /dev/ttyUSB0
+```
+
+That runs coordinator bringup and prints a pass/fail line per step. Add
+`--permit-join` to open the network, and `--onoff <nwk> on|off` to command a
+device that joined.
+
+The codecs are sans-I/O and the runtime is optional. If you have your own I/O
+story, `default-features = false` drops tokio entirely and leaves the ASH and
+EZSP codecs, which are pure functions over bytes.
+
+## Adding a command this crate does not have
+
+Command coverage grows from real need rather than from working through the
+specification, so at any moment there are commands nobody has needed yet. That
+is only a reasonable design if it does not block you — so `Command` is an
+ordinary public trait, not a sealed one. You can implement it **in your own
+crate**, for a command this one has never heard of, and send it today:
+
+```rust
+/// `setRadioPower` — frame id 0x0099.
+struct SetRadioPower { dbm: i8 }
+
+impl EzspEncode for SetRadioPower {
+    fn encode(&self, out: &mut Writer) -> Result<(), EzspError> {
+        out.u8(self.dbm as u8);
+        Ok(())
+    }
+}
+
+impl EzspDecode for SetRadioPowerResponse {
+    fn decode(input: &mut Reader<'_>) -> Result<Self, EzspError> {
+        // Applies the version boundary for you: a status is one byte below
+        // EZSP 14 and four at or above it.
+        Ok(Self { status: SlStatus::decode(input)? })
+    }
+}
+
+impl Command for SetRadioPower {
+    type Response = SetRadioPowerResponse;
+    const ID: FrameId = FrameId(0x0099);
+}
+```
+
+`tests/extending_from_outside.rs` is a worked example that proves this: it
+defines `getChildData`, a command this crate does not implement, from a
+separate crate, and drives it through the whole runtime. It is an integration
+test precisely so it can only reach what a real dependent can reach — if the
+public API ever loses a piece needed for this, that test stops compiling.
+
+If you write one worth sharing, please send it back. See
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Status
 
@@ -158,7 +243,7 @@ happening; only the device did.
 
 | | |
 |---|---|
-| unit and integration tests | **128** |
+| unit and integration tests | **132** (including 2 doctests) |
 | fuzz targets | 4 |
 | fuzz executions to date | ~89.2M, no crashes |
 | hardware-confirmed paths | bringup end to end, a real device join, and a command that actuated it |
@@ -252,6 +337,22 @@ the command surface grows only when real hardware needs it. If those are not
 properties you need, the other crate is likely the better fit.
 
 [`ezsp`]: https://crates.io/crates/ezsp
+
+## Contributing
+
+Contributions are welcome, and the most valuable ones are often the smallest.
+[CONTRIBUTING.md](CONTRIBUTING.md) has a **Where to start** section listing real
+open tasks, marked by whether they need hardware.
+
+The single most useful thing anyone can do right now needs no Rust at all: run
+the `startup` example against your dongle and
+[report what happened](https://github.com/deatherving/rsezsp/issues/new?template=hardware_report.yml).
+Exactly one dongle and one firmware build have ever been tested, so every
+compatibility claim here rests on a single data point. "Everything worked" is a
+real result and genuinely helps.
+
+Also see [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), [SECURITY.md](SECURITY.md)
+and [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
