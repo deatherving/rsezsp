@@ -22,3 +22,10 @@ updates:
     directory: /
     schedule:
       interval: monthly
+    ignore:
+      # `dtolnay/rust-toolchain@1.90` pins the *Rust toolchain*, not the
+      # action. Dependabot reads it as a version tag and bumps it, which
+      # quietly turns the minimum-supported-Rust job into a second stable
+      # build -- it keeps passing while proving nothing. The MSRV moves when
+      # `rust-version` in Cargo.toml moves, deliberately, not on a schedule.
+      - dependency-name: dtolnay/rust-toolchain
