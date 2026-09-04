@@ -24,6 +24,13 @@ pub struct FakeTransport {
     written: Vec<u8>,
     /// Set to fail the next read.
     fail_next_read: Option<TransportError>,
+    /// Whether the other end has gone away.
+    ///
+    /// Distinct from having nothing queued. A real port with no data pends
+    /// until some arrives; only an unplugged device closes. Conflating the two
+    /// makes every test that waits for a timeout report a transport failure
+    /// instead -- which is exactly what happened before this existed.
+    closed: bool,
 }
 
 impl FakeTransport {
@@ -46,6 +53,7 @@ impl FakeTransport {
             to_read: chunks.into_iter().map(Into::into).collect(),
             written: Vec::new(),
             fail_next_read: None,
+            closed: false,
         }
     }
 
@@ -57,6 +65,15 @@ impl FakeTransport {
     /// Makes the next read fail.
     pub fn fail_next_read(&mut self, error: TransportError) {
         self.fail_next_read = Some(error);
+    }
+
+    /// Models the other end going away.
+    ///
+    /// Without this, "nothing more to read" and "the device was unplugged"
+    /// would be the same thing, and they call for opposite responses: one
+    /// waits, the other gives up.
+    pub fn close(&mut self) {
+        self.closed = true;
     }
 
     /// Everything written so far.
@@ -88,9 +105,17 @@ impl Transport for FakeTransport {
         if let Some(error) = self.fail_next_read.take() {
             return Err(error);
         }
-        // `Closed` rather than an empty vec: an empty read would look like a
-        // stall and a caller would spin on it.
-        self.to_read.pop_front().ok_or(TransportError::Closed)
+        if let Some(chunk) = self.to_read.pop_front() {
+            return Ok(chunk);
+        }
+        if self.closed {
+            return Err(TransportError::Closed);
+        }
+        // Drained but open: pend, like a real port with nothing to say. The
+        // caller's deadline decides what that means. Returning `Closed` here
+        // would turn every expected timeout into a transport failure, and
+        // returning an empty vec would make a caller spin.
+        std::future::pending().await
     }
 }
 
@@ -109,9 +134,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_drained_transport_reports_closed_rather_than_stalling() {
-        // An empty read would look like a stall and a caller would spin.
+    async fn a_drained_but_open_transport_pends_rather_than_closing() {
+        // A real port with no data waits. Reporting `Closed` here would turn
+        // every expected timeout into a transport failure.
         let mut transport = FakeTransport::new();
+        let read =
+            tokio::time::timeout(std::time::Duration::from_millis(50), transport.read()).await;
+        assert!(read.is_err(), "a drained open transport must not resolve");
+    }
+
+    #[tokio::test]
+    async fn an_explicitly_closed_transport_reports_closed() {
+        let mut transport = FakeTransport::new();
+        transport.close();
         assert_eq!(transport.read().await, Err(TransportError::Closed));
     }
 
