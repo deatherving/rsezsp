@@ -19,6 +19,50 @@ than a speculative feature.
   implicit.
 - **Bug fixes**, with a test that fails before and passes after.
 
+## Where to start
+
+These are real open tasks, not filler. Each says what it needs, so you can
+find one that matches what you have.
+
+**Run it against your dongle and say what happened.** No Rust required, and it
+is the most useful thing anyone can do right now — exactly one dongle and one
+firmware build have ever been tested, so every compatibility claim in the
+README rests on a single data point. `cargo run --example startup -- <port>`,
+then open a hardware report. "Everything worked" is a real result.
+
+**Add `getChildData` (`0x004a`).** *Needs a device to test properly.* After a
+host restart there is currently no way to learn a joined device's short
+address; it has to come from a join callback or from the caller. Reading the
+child table is what closes that, and it is the concrete blocker on restart
+recovery. Self-contained: one command, one response type, a loop that stops
+when the NCP says there are no more children.
+
+**Add property tests.** *No hardware needed.* There are none, and there is
+obvious ground for them: ASH encode/decode round-trips across arbitrary
+payloads, byte stuffing and randomisation being their own inverse, the
+sequence-number window never admitting an ambiguous acknowledgement. `proptest`
+would fit the existing suite directly.
+
+**Map `EmberStatus` to `sl_status_t`.** *No hardware needed, but a reference
+does.* Statuses are currently carried as raw values. `is_ok()` behaves
+identically either way, which covers almost every caller, but a caller matching
+a specific non-zero status has to know which firmware it is talking to.
+
+**Verify the callback field order above EZSP 14.** *Needs newer firmware.*
+`messageSentHandler` and `incomingMessageHandler` are confirmed on EZSP 13
+only. Field *widths* above 14 follow the boundaries this crate models, but
+whether those callbacks reorder their fields has not been verified against
+either a device or a reference — and getting it wrong produces plausible wrong
+values rather than an error.
+
+**Provoke ASH retransmission on hardware.** *Needs a device and patience.* The
+window and retransmission logic are unit-tested but have never fired against a
+real dongle, because nothing has dropped a frame yet.
+
+If none of these fit, open an issue describing what you want to do. A command
+that is not implemented because nobody has needed it yet is not a decision
+against it.
+
 ## Before you open a pull request
 
 ```bash

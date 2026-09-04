@@ -27,6 +27,20 @@ jobs:
       # The codecs are sans-I/O. Building without the runtime is what keeps
       # that true rather than aspirational.
       - run: cargo clippy --all-targets --no-default-features -- -D warnings
+      - run: cargo test --no-default-features
+
+  package:
+    name: packages for crates.io
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Builds the crate from only the files that would actually be published
+      # and compiles it there. Catches the classic first-publish failure: an
+      # `exclude` entry that removes something the build needs, which no local
+      # test can see because the file is still on disk.
+      - run: cargo package --all-features
 
   msrv:
     name: minimum supported Rust version

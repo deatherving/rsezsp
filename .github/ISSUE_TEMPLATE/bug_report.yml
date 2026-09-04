@@ -1,0 +1,38 @@
+name: Bug report
+description: Something decodes, encodes, or behaves incorrectly
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected instead
+    validations:
+      required: true
+  - type: textarea
+    id: bytes
+    attributes:
+      label: The bytes, if you have them
+      description: >-
+        A wire capture is the single most useful thing you can attach — it can
+        become a regression test verbatim. `RUST_LOG=debug` logs every EZSP
+        frame in and out.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: rsezsp version
+      placeholder: 0.1.0, or a commit sha
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: Hardware, if a device was involved
+      description: Dongle, firmware and EZSP version.
+  - type: markdown
+    attributes:
+      value: >-
+        If a device behaved differently from what the protocol documentation
+        says, say so plainly. That disagreement is usually the bug, and this
+        project resolves it in favour of the device.

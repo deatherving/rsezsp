@@ -6,11 +6,19 @@ rust-version = "1.90"
 description = "A Rust implementation of Silicon Labs EZSP for Ember NCP devices"
 license = "MIT"
 repository = "https://github.com/deatherving/rsezsp"
+homepage = "https://github.com/deatherving/rsezsp"
+documentation = "https://docs.rs/rsezsp"
 authors = ["The rsezsp contributors"]
 keywords = ["zigbee", "ezsp", "ember", "silabs", "ash"]
 categories = ["embedded", "network-programming", "hardware-support"]
 readme = "README.md"
 exclude = ["/.github", "/scripts"]
+
+# docs.rs builds with default features only unless told otherwise, which would
+# hide the entire runtime layer -- `Ncp` is behind `tokio-transport`.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 # `fuzz` is its own crate: libFuzzer needs nightly, and the rest of the suite
 # deliberately stays on stable.

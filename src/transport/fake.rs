@@ -1,5 +1,8 @@
 //! A transport backed by scripted bytes, for tests.
-
+//!
+//! Public on purpose, and part of the supported API: a crate built on top of
+//! this one needs the same determinism to test its own logic, and should not
+//! have to write a fake serial port to get it.
 //!
 //! The point is determinism. Every ASH and EZSP behaviour worth testing --
 //! a reset handshake, a retransmission, a callback interleaved with a

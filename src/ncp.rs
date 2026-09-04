@@ -27,7 +27,7 @@ use std::time::Duration;
 use crate::ash::{self, AshFrame, Connection, Decoded, Decoder, Outbound};
 use crate::ezsp::callback::Callback;
 use crate::ezsp::codec::{EzspDecode, Writer};
-use crate::ezsp::command::{Command, Version};
+use crate::ezsp::command::{Command, Version, VersionResponse};
 use crate::ezsp::correlation::{Classified, Correlator};
 use crate::ezsp::error::EzspError;
 use crate::ezsp::frame::{self, FrameId, HeaderFormat};
@@ -58,6 +58,13 @@ pub struct Ncp<T: Transport> {
     decoder: Decoder,
     correlator: Correlator,
     version: ProtocolVersion,
+    /// The NCP firmware's own version number, as reported during negotiation.
+    ///
+    /// Kept because it identifies the firmware build, and firmware builds are
+    /// what differ. Every hardware report this project acts on starts with
+    /// which one was running; leaving it in a debug log means a caller has to
+    /// reproduce the connection to answer that.
+    stack_version: u16,
     callbacks: Vec<Callback>,
     /// The pending command's response parameters, once they arrive.
     ///
@@ -110,6 +117,7 @@ impl<T: Transport> Ncp<T> {
             // then only the bootstrap `version` command is encodable, and it
             // has no version-dependent fields.
             version: ProtocolVersion::PREFERRED,
+            stack_version: 0,
             callbacks: Vec::new(),
             initial_version_sent: false,
             response: None,
@@ -119,8 +127,13 @@ impl<T: Transport> Ncp<T> {
         ncp.reset().await?;
 
         let negotiated = ncp.negotiate().await?;
-        ncp.version = negotiated;
-        tracing::info!(version = %ncp.version, "EZSP negotiated");
+        ncp.version = negotiated.protocol_version;
+        ncp.stack_version = negotiated.stack_version;
+        tracing::info!(
+            version = %ncp.version,
+            stack_version = format_args!("{:#06x}", ncp.stack_version),
+            "EZSP negotiated"
+        );
         Ok(ncp)
     }
 
@@ -143,7 +156,7 @@ impl<T: Transport> Ncp<T> {
     /// [`EzspError::UnsupportedVersion`] when the NCP runs a version this
     /// build does not know the wire format for. Refused rather than attempted:
     /// a wrong field width yields plausible wrong values, not an error.
-    async fn negotiate(&mut self) -> Result<ProtocolVersion, EzspError> {
+    async fn negotiate(&mut self) -> Result<VersionResponse, EzspError> {
         let offered = ProtocolVersion::PREFERRED;
         let first = self.command(Version { desired: offered }).await?;
 
@@ -162,7 +175,7 @@ impl<T: Transport> Ncp<T> {
 
         if first.protocol_version == offered {
             tracing::debug!(version = %offered, "NCP runs the offered version");
-            return Ok(offered);
+            return Ok(first);
         }
 
         // The second exchange, which is what actually completes negotiation.
@@ -181,12 +194,22 @@ impl<T: Transport> Ncp<T> {
             stack_version = format_args!("{:#06x}", second.stack_version),
             "NCP runs an older version; switched"
         );
-        Ok(agreed)
+        Ok(second)
     }
 
-    /// The version in use. Every field width follows from it.
+    /// The EZSP version in use. Every field width follows from it.
     pub const fn version(&self) -> ProtocolVersion {
         self.version
+    }
+
+    /// The NCP firmware's own version number, from the negotiation exchange.
+    ///
+    /// Distinct from [`Self::version`], which is the *protocol* version. This
+    /// one identifies the firmware build -- `0x7440` for `EmberZNet` 7.4.4 --
+    /// and is the first thing a hardware report should quote, because firmware
+    /// builds are what differ.
+    pub const fn stack_version(&self) -> u16 {
+        self.stack_version
     }
 
     /// Callbacks received so far, taken and cleared.

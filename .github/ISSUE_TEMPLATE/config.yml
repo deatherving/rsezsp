@@ -1,0 +1,7 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Question about the protocol or the code
+    url: https://github.com/deatherving/rsezsp/discussions
+    about: >-
+      Ask anything. "Why does it do this?" questions are welcome and often
+      turn into documentation.
