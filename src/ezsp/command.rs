@@ -22,8 +22,12 @@ use crate::ezsp::error::EzspError;
 use crate::ezsp::frame::FrameId;
 use crate::ezsp::version::ProtocolVersion;
 use crate::types::aps::{ApsFrame, UnicastType};
-use crate::types::network::{ConfigId, Decision, Eui64, NetworkInitBitmask, PolicyId};
-use crate::types::security::{SecurityKey, SecurityManFlags};
+use crate::types::network::{
+    ConfigId, Decision, Eui64, NetworkInitBitmask, NetworkParameters, NodeId, PolicyId, ValueId,
+};
+use crate::types::security::{
+    InitialSecurityState, SecurityKey, SecurityManContext, SecurityManFlags,
+};
 use crate::types::status::SlStatus;
 
 /// One EZSP command.
@@ -543,9 +547,423 @@ impl Command for ImportTransientKey {
     const ID: FrameId = FrameId::IMPORT_TRANSIENT_KEY;
 }
 
+/// `getConfigurationValue` — read one configuration item. Frame id `0x0052`.
+///
+/// The counterpart to [`SetConfigurationValue`], and worth having for the same
+/// reason bringup reads values before writing them: NCP defaults are not what
+/// the documentation implies. `STACK_PROFILE` defaults to `0`, not `2`, and
+/// finding that out required reading it back.
+///
+/// Reference: UG100.
+/// Hardware: confirmed (EZSP 13).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetConfigurationValue {
+    /// Which item.
+    pub config_id: ConfigId,
+}
+
+/// The value the NCP holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetConfigurationValueResponse {
+    /// Whether the item could be read.
+    pub status: SlStatus,
+    /// The value, meaningful only when `status` is success.
+    pub value: u16,
+}
+
+impl EzspEncode for GetConfigurationValue {
+    fn encode(&self, out: &mut Writer) -> Result<(), EzspError> {
+        out.u8(self.config_id.0);
+        Ok(())
+    }
+}
+
+impl EzspDecode for GetConfigurationValueResponse {
+    fn decode(input: &mut Reader<'_>) -> Result<Self, EzspError> {
+        Ok(Self {
+            status: SlStatus::decode(input)?,
+            value: input.u16()?,
+        })
+    }
+}
+
+impl Command for GetConfigurationValue {
+    type Response = GetConfigurationValueResponse;
+    const ID: FrameId = FrameId::GET_CONFIGURATION_VALUE;
+}
+
+/// `getValue` — read a variable-length NCP value. Frame id `0x00aa`.
+///
+/// Distinct from `getConfigurationValue`, which reads a `u16`. This one
+/// answers with a byte string, which is how the firmware version string is
+/// obtained.
+///
+/// Reference: UG100.
+/// Hardware: confirmed (EZSP 13) — `VERSION_INFO`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetValue {
+    /// Which value.
+    pub value_id: ValueId,
+}
+
+/// The bytes the NCP answered with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GetValueResponse {
+    /// Whether the value could be read.
+    pub status: SlStatus,
+    /// The value. Interpretation depends entirely on which value was asked
+    /// for, so it is handed back as bytes.
+    pub value: Vec<u8>,
+}
+
+impl EzspEncode for GetValue {
+    fn encode(&self, out: &mut Writer) -> Result<(), EzspError> {
+        out.u8(self.value_id.0);
+        Ok(())
+    }
+}
+
+impl EzspDecode for GetValueResponse {
+    fn decode(input: &mut Reader<'_>) -> Result<Self, EzspError> {
+        Ok(Self {
+            status: SlStatus::decode(input)?,
+            value: input.length_prefixed()?.to_vec(),
+        })
+    }
+}
+
+impl Command for GetValue {
+    type Response = GetValueResponse;
+    const ID: FrameId = FrameId::GET_VALUE;
+}
+
+/// `setManufacturerCode` — declare the manufacturer id the NCP reports.
+/// Frame id `0x0015`.
+///
+/// Appears in the node descriptor a device reads during its interview. The NCP
+/// answers with no parameters at all.
+///
+/// Reference: UG100.
+/// Hardware: confirmed (EZSP 13).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetManufacturerCode {
+    /// The Zigbee Alliance manufacturer id.
+    pub code: u16,
+}
+
+/// `setManufacturerCode` returns nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetManufacturerCodeResponse;
+
+impl EzspEncode for SetManufacturerCode {
+    fn encode(&self, out: &mut Writer) -> Result<(), EzspError> {
+        out.u16(self.code);
+        Ok(())
+    }
+}
+
+impl EzspDecode for SetManufacturerCodeResponse {
+    fn decode(_input: &mut Reader<'_>) -> Result<Self, EzspError> {
+        Ok(Self)
+    }
+}
+
+impl Command for SetManufacturerCode {
+    type Response = SetManufacturerCodeResponse;
+    const ID: FrameId = FrameId::SET_MANUFACTURER_CODE;
+}
+
+/// `clearTransientLinkKeys` — forget every transient link key. Frame id
+/// `0x006b`.
+///
+/// The other half of [`ImportTransientKey`]. A transient key is installed to
+/// open a commissioning window and cleared when it closes; leaving it in place
+/// means the well-known `ZigBeeAlliance09` key stays valid for joining
+/// indefinitely, which is the difference between a window and an open door.
+///
+/// Reference: UG100.
+/// Hardware: confirmed (EZSP 13).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClearTransientLinkKeys;
+
+/// `clearTransientLinkKeys` returns nothing, not even a status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClearTransientLinkKeysResponse;
+
+impl EzspEncode for ClearTransientLinkKeys {
+    fn encode(&self, _out: &mut Writer) -> Result<(), EzspError> {
+        Ok(())
+    }
+}
+
+impl EzspDecode for ClearTransientLinkKeysResponse {
+    fn decode(_input: &mut Reader<'_>) -> Result<Self, EzspError> {
+        Ok(Self)
+    }
+}
+
+impl Command for ClearTransientLinkKeys {
+    type Response = ClearTransientLinkKeysResponse;
+    const ID: FrameId = FrameId::CLEAR_TRANSIENT_LINK_KEYS;
+}
+
+/// `getNetworkParameters` — read the network the NCP is on. Frame id `0x0028`.
+///
+/// The source of truth for persistence: PAN id, extended PAN id and channel
+/// have to be stored to recognise the same network after a restart, and the
+/// NCP is the only place they exist once a network has been formed.
+///
+/// Reference: UG100.
+/// Hardware: confirmed (EZSP 13) — on a resumed network.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetNetworkParameters;
+
+/// The network the NCP is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetNetworkParametersResponse {
+    /// Whether the NCP is on a network at all.
+    pub status: SlStatus,
+    /// What kind of node it is. `1` is a coordinator.
+    pub node_type: u8,
+    /// The parameters, meaningful only when `status` is success.
+    pub parameters: NetworkParameters,
+}
+
+impl EzspEncode for GetNetworkParameters {
+    fn encode(&self, _out: &mut Writer) -> Result<(), EzspError> {
+        Ok(())
+    }
+}
+
+impl EzspDecode for GetNetworkParametersResponse {
+    fn decode(input: &mut Reader<'_>) -> Result<Self, EzspError> {
+        Ok(Self {
+            status: SlStatus::decode(input)?,
+            node_type: input.u8()?,
+            parameters: NetworkParameters::decode(input)?,
+        })
+    }
+}
+
+impl Command for GetNetworkParameters {
+    type Response = GetNetworkParametersResponse;
+    const ID: FrameId = FrameId::GET_NETWORK_PARAMETERS;
+}
+
+/// `setInitialSecurityState` — configure security before forming a network.
+/// Frame id `0x0068`.
+///
+/// # This writes keys
+///
+/// Sent before [`FormNetwork`], and only then. Calling it on a running network
+/// rewrites the security configuration under every joined device.
+///
+/// [`crate::types::security::InitialSecurityBitmask::NO_FRAME_COUNTER_RESET`] matters more than its
+/// name suggests when restoring a stored network: without it the frame
+/// counters go back to zero, and every device that remembers a higher counter
+/// rejects the coordinator's frames as replays.
+///
+/// Reference: UG100.
+/// Hardware: not yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetInitialSecurityState {
+    /// The configuration.
+    pub state: InitialSecurityState,
+}
+
+/// Whether the configuration was accepted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetInitialSecurityStateResponse {
+    /// The NCP's answer.
+    pub status: SlStatus,
+}
+
+impl EzspEncode for SetInitialSecurityState {
+    fn encode(&self, out: &mut Writer) -> Result<(), EzspError> {
+        self.state.encode(out)
+    }
+}
+
+impl EzspDecode for SetInitialSecurityStateResponse {
+    fn decode(input: &mut Reader<'_>) -> Result<Self, EzspError> {
+        Ok(Self {
+            status: SlStatus::decode(input)?,
+        })
+    }
+}
+
+impl Command for SetInitialSecurityState {
+    type Response = SetInitialSecurityStateResponse;
+    const ID: FrameId = FrameId::SET_INITIAL_SECURITY_STATE;
+}
+
+/// `formNetwork` — create a network. Frame id `0x001e`.
+///
+/// # This writes to the dongle
+///
+/// Forming stores a new network in the NCP's tokens. Doing it on a coordinator
+/// that already has a network orphans every device that had joined: they hold
+/// keys for a network that no longer exists and cannot be told, because
+/// telling them requires the network they can no longer reach.
+///
+/// Resume with [`NetworkInit`] first, and form only if that reports there is
+/// nothing to resume.
+///
+/// Reference: UG100.
+/// Hardware: not yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FormNetwork {
+    /// The network to create.
+    pub parameters: NetworkParameters,
+}
+
+/// Whether the network was formed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FormNetworkResponse {
+    /// The NCP's answer. Success here means forming *started*; the network is
+    /// up when a `stackStatus` callback says so.
+    pub status: SlStatus,
+}
+
+impl EzspEncode for FormNetwork {
+    fn encode(&self, out: &mut Writer) -> Result<(), EzspError> {
+        self.parameters.encode(out)
+    }
+}
+
+impl EzspDecode for FormNetworkResponse {
+    fn decode(input: &mut Reader<'_>) -> Result<Self, EzspError> {
+        Ok(Self {
+            status: SlStatus::decode(input)?,
+        })
+    }
+}
+
+impl Command for FormNetwork {
+    type Response = FormNetworkResponse;
+    const ID: FrameId = FrameId::FORM_NETWORK;
+}
+
+/// `exportKey` — read a key out of the security manager. Frame id `0x0114`.
+///
+/// # This returns key material
+///
+/// The network key is what persistence needs in order to resume a network
+/// after the NCP is replaced or reset. [`SecurityKey`] redacts in `Debug` so a
+/// structure containing one can be logged, but the bytes are real and
+/// `expose()` is deliberately explicit.
+///
+/// Note the field order: the key comes **before** the status, which is the
+/// reverse of every other command here.
+///
+/// Reference: UG100 security manager API.
+/// Hardware: confirmed (EZSP 13) — the network key exported here resumed a
+/// network.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExportKey {
+    /// Which key to read.
+    pub context: SecurityManContext,
+}
+
+/// The key, if the security manager would part with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExportKeyResponse {
+    /// The key. Meaningless unless `status` is success.
+    pub key: SecurityKey,
+    /// The NCP's answer. Always four bytes: a security-manager command returns
+    /// an `sl_status_t` at every version.
+    pub status: SlStatus,
+}
+
+impl EzspEncode for ExportKey {
+    fn encode(&self, out: &mut Writer) -> Result<(), EzspError> {
+        self.context.encode(out)
+    }
+}
+
+impl EzspDecode for ExportKeyResponse {
+    fn decode(input: &mut Reader<'_>) -> Result<Self, EzspError> {
+        // Key first, status second. Reversing these yields sixteen bytes of
+        // plausible-looking key material built from a status and the first
+        // twelve bytes of the real key.
+        Ok(Self {
+            key: SecurityKey::decode(input)?,
+            status: SlStatus(input.u32()?),
+        })
+    }
+}
+
+impl Command for ExportKey {
+    type Response = ExportKeyResponse;
+    const ID: FrameId = FrameId::EXPORT_KEY;
+}
+
+/// `sendBroadcast` — send to every node within a radius. Frame id `0x0036`.
+///
+/// Used for ZDO requests that have no single destination, such as asking the
+/// network who provides a service.
+///
+/// Reference: UG100; message tag width follows the same boundary as
+/// [`SendUnicast`].
+/// Hardware: not yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SendBroadcast {
+    /// Which broadcast address. See [`NodeId::BROADCAST_ALL`] and its
+    /// neighbours.
+    pub destination: NodeId,
+    /// The APS header.
+    pub aps_frame: ApsFrame,
+    /// How many hops. `0` means the stack's maximum -- a broadcast is flooded,
+    /// so a smaller radius is worth using when the destination is nearby.
+    pub radius: u8,
+    /// Echoed back by the matching `messageSent` callback.
+    pub message_tag: u16,
+    /// The application payload.
+    pub message: Vec<u8>,
+}
+
+/// Whether the broadcast was accepted for sending.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SendBroadcastResponse {
+    /// The NCP's answer.
+    pub status: SlStatus,
+    /// The APS sequence number it was sent with.
+    pub aps_sequence: u8,
+}
+
+impl EzspEncode for SendBroadcast {
+    fn encode(&self, out: &mut Writer) -> Result<(), EzspError> {
+        out.u16(self.destination.0);
+        self.aps_frame.encode(out)?;
+        out.u8(self.radius);
+        if out.version().has_wide_message_tag() {
+            out.u16(self.message_tag);
+        } else {
+            #[allow(clippy::cast_possible_truncation)]
+            out.u8((self.message_tag & 0xff) as u8);
+        }
+        out.length_prefixed(&self.message)
+    }
+}
+
+impl EzspDecode for SendBroadcastResponse {
+    fn decode(input: &mut Reader<'_>) -> Result<Self, EzspError> {
+        Ok(Self {
+            status: SlStatus::decode(input)?,
+            aps_sequence: input.u8()?,
+        })
+    }
+}
+
+impl Command for SendBroadcast {
+    type Response = SendBroadcastResponse;
+    const ID: FrameId = FrameId::SEND_BROADCAST;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::aps::ApsOptions;
 
     const V13: ProtocolVersion = ProtocolVersion::new(0x0d);
     const V14: ProtocolVersion = ProtocolVersion::new(0x0e);
@@ -747,5 +1165,179 @@ mod tests {
             command.encode(&mut out),
             Err(EzspError::PayloadTooLong { .. })
         ));
+    }
+    #[test]
+    fn export_key_reads_the_key_before_the_status() {
+        // The reverse of every other command here, and getting it backwards
+        // does not fail: it yields sixteen bytes of plausible key material
+        // built from a status and the first twelve bytes of the real key.
+        let mut bytes = vec![0xab; 16];
+        bytes.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // status, four bytes
+        let mut input = Reader::new(&bytes, V13);
+        let response = ExportKeyResponse::decode(&mut input).expect("decodes");
+
+        assert!(response.status.is_ok());
+        assert_eq!(response.key.expose(), &[0xab; 16]);
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn export_key_status_is_four_bytes_even_on_v13() {
+        // A security-manager command returns an `sl_status_t` at every
+        // version, unlike the commands around it.
+        let mut bytes = vec![0x00; 16];
+        bytes.extend_from_slice(&[0x02, 0x00, 0x00, 0x00]);
+        let mut input = Reader::new(&bytes, V13);
+        let response = ExportKeyResponse::decode(&mut input).expect("decodes");
+        assert_eq!(response.status, SlStatus(0x02));
+        assert!(input.is_empty(), "a one-byte read would leave three behind");
+    }
+
+    #[test]
+    fn export_key_asks_for_the_network_key_in_the_documented_layout() {
+        let command = ExportKey {
+            context: SecurityManContext::network_key(),
+        };
+        assert_eq!(
+            encoded(&command, V13),
+            vec![
+                0x01, // core key type: network
+                0x00, // key index
+                0x00, // derived type
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // eui64
+                0x00, // multi-network index
+                0x00, // flags
+                0x00, 0x00, 0x00, 0x00, // psa key algorithm permission
+            ],
+            "the trailing four bytes are unused for this key type but still \
+             shift the status if omitted"
+        );
+    }
+
+    #[test]
+    fn network_parameters_round_trip_through_the_wire_layout() {
+        let parameters = NetworkParameters {
+            extended_pan_id: [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88],
+            pan_id: 0x1a62,
+            radio_tx_power: -3,
+            radio_channel: 15,
+            join_method: 0,
+            nwk_manager_id: 0x0000,
+            nwk_update_id: 7,
+            channels: 0x07ff_f800,
+        };
+
+        let mut out = Writer::new(V13);
+        parameters.encode(&mut out).expect("encodes");
+        let bytes = out.into_vec();
+        assert_eq!(bytes.len(), 8 + 2 + 1 + 1 + 1 + 2 + 1 + 4);
+        assert_eq!(
+            bytes.get(10).copied(),
+            Some(0xfd),
+            "-3 dBm as a signed byte"
+        );
+
+        let mut input = Reader::new(&bytes, V13);
+        let decoded = NetworkParameters::decode(&mut input).expect("decodes");
+        assert_eq!(decoded, parameters);
+        assert_eq!(decoded.radio_tx_power, -3, "transmit power is signed");
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn get_network_parameters_decodes_a_coordinator_on_a_network() {
+        let mut bytes = vec![0x00, 0x01]; // success, coordinator
+        bytes.extend_from_slice(&[0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]);
+        bytes.extend_from_slice(&[0x62, 0x1a]); // pan id 0x1a62
+        bytes.extend_from_slice(&[0x00, 0x0f, 0x00]); // power, channel 15, join method
+        bytes.extend_from_slice(&[0x00, 0x00, 0x00]); // manager id, update id
+        bytes.extend_from_slice(&[0x00, 0xf8, 0xff, 0x07]); // channel mask
+
+        let mut input = Reader::new(&bytes, V13);
+        let response = GetNetworkParametersResponse::decode(&mut input).expect("decodes");
+        assert!(response.status.is_ok());
+        assert_eq!(response.node_type, 1);
+        assert_eq!(response.parameters.pan_id, 0x1a62);
+        assert_eq!(response.parameters.radio_channel, 15);
+        assert!(input.is_empty(), "trailing bytes would mean a wrong width");
+    }
+
+    #[test]
+    fn a_broadcast_message_tag_follows_the_same_boundary_as_a_unicast() {
+        let command = SendBroadcast {
+            destination: NodeId::BROADCAST_RX_ON_WHEN_IDLE,
+            aps_frame: ApsFrame {
+                profile_id: 0x0000,
+                cluster_id: 0x0036,
+                source_endpoint: 0,
+                destination_endpoint: 0,
+                options: ApsOptions(0x0000),
+                group_id: 0,
+                sequence: 0,
+            },
+            radius: 0,
+            message_tag: 0x0001,
+            message: vec![0x42],
+        };
+
+        // 2 destination + 11 APS + 1 radius + tag + 1 length + 1 payload.
+        assert_eq!(encoded(&command, V13).len(), 2 + 11 + 1 + 1 + 1 + 1);
+        assert_eq!(encoded(&command, V14).len(), 2 + 11 + 1 + 2 + 1 + 1);
+    }
+
+    #[test]
+    fn commands_that_answer_with_nothing_decode_an_empty_response() {
+        // Not every command returns a status. Expecting one would turn a
+        // perfectly good empty response into a truncation error.
+        let mut input = Reader::new(&[], V13);
+        assert!(ClearTransientLinkKeysResponse::decode(&mut input).is_ok());
+        let mut input = Reader::new(&[], V13);
+        assert!(SetManufacturerCodeResponse::decode(&mut input).is_ok());
+    }
+
+    #[test]
+    fn get_configuration_value_reads_the_status_at_the_version_width() {
+        let narrow = [0x00, 0x02, 0x00];
+        let mut input = Reader::new(&narrow, V13);
+        let response = GetConfigurationValueResponse::decode(&mut input).expect("v13");
+        assert!(response.status.is_ok());
+        assert_eq!(response.value, 2, "the stack profile we set during bringup");
+        assert!(input.is_empty());
+
+        let wide = [0x00, 0x00, 0x00, 0x00, 0x02, 0x00];
+        let mut input = Reader::new(&wide, V14);
+        let response = GetConfigurationValueResponse::decode(&mut input).expect("v14");
+        assert_eq!(response.value, 2);
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn get_value_hands_back_its_bytes_through_the_length_prefix() {
+        let bytes = [0x00, 0x04, 0x07, 0x04, 0x04, 0x00];
+        let mut input = Reader::new(&bytes, V13);
+        let response = GetValueResponse::decode(&mut input).expect("decodes");
+        assert!(response.status.is_ok());
+        assert_eq!(response.value, vec![0x07, 0x04, 0x04, 0x00]);
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn the_new_responses_refuse_truncated_input_rather_than_guessing() {
+        for len in 0..19 {
+            let bytes = vec![0u8; len];
+            let mut input = Reader::new(&bytes, V13);
+            assert!(
+                ExportKeyResponse::decode(&mut input).is_err(),
+                "{len} bytes must not decode as an exported key"
+            );
+        }
+        for len in 0..18 {
+            let bytes = vec![0u8; len];
+            let mut input = Reader::new(&bytes, V13);
+            assert!(
+                GetNetworkParametersResponse::decode(&mut input).is_err(),
+                "{len} bytes must not decode as network parameters"
+            );
+        }
     }
 }

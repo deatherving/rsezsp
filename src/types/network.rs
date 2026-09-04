@@ -301,3 +301,71 @@ mod tests {
         assert_ne!(decision.0, 0, "zero would deny every join");
     }
 }
+
+/// The radio and addressing parameters of a Zigbee network.
+///
+/// Read back with `getNetworkParameters` and supplied to `formNetwork`. The
+/// same layout serves both directions, which is why it is a type rather than a
+/// pile of arguments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NetworkParameters {
+    /// The extended PAN id, eight bytes on the wire.
+    pub extended_pan_id: [u8; 8],
+    /// The short PAN id.
+    pub pan_id: u16,
+    /// Transmit power in dBm. Signed: negative values are normal.
+    pub radio_tx_power: i8,
+    /// The 802.15.4 channel, 11 to 26.
+    pub radio_channel: u8,
+    /// How a node joins. `0` is `USE_MAC_ASSOCIATION`.
+    pub join_method: u8,
+    /// The network manager's short address.
+    pub nwk_manager_id: u16,
+    /// Incremented by the network manager on a channel or PAN id change. A
+    /// device that has missed updates rejoins on the strength of this.
+    pub nwk_update_id: u8,
+    /// Channel mask the network may use.
+    pub channels: u32,
+}
+
+impl EzspEncode for NetworkParameters {
+    fn encode(&self, out: &mut Writer) -> Result<(), EzspError> {
+        out.bytes(&self.extended_pan_id);
+        out.u16(self.pan_id);
+        // Cast rather than a separate signed writer: the wire carries eight
+        // bits and the sign is the caller's interpretation of them.
+        #[allow(clippy::cast_sign_loss)]
+        out.u8(self.radio_tx_power as u8);
+        out.u8(self.radio_channel);
+        out.u8(self.join_method);
+        out.u16(self.nwk_manager_id);
+        out.u8(self.nwk_update_id);
+        out.u32(self.channels);
+        Ok(())
+    }
+}
+
+impl EzspDecode for NetworkParameters {
+    fn decode(input: &mut Reader<'_>) -> Result<Self, EzspError> {
+        Ok(Self {
+            extended_pan_id: input.array::<8>()?,
+            pan_id: input.u16()?,
+            #[allow(clippy::cast_possible_wrap)]
+            radio_tx_power: input.u8()? as i8,
+            radio_channel: input.u8()?,
+            join_method: input.u8()?,
+            nwk_manager_id: input.u16()?,
+            nwk_update_id: input.u8()?,
+            channels: input.u32()?,
+        })
+    }
+}
+
+/// Which value `getValue` should return.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ValueId(pub u8);
+
+impl ValueId {
+    /// The NCP firmware's version string and build number.
+    pub const VERSION_INFO: Self = Self(0x11);
+}

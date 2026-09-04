@@ -41,6 +41,24 @@ impl FrameId {
     pub const GET_EUI64: Self = Self(0x0026);
     /// `sendUnicast`.
     pub const SEND_UNICAST: Self = Self(0x0034);
+    /// `sendBroadcast`.
+    pub const SEND_BROADCAST: Self = Self(0x0036);
+    /// `setManufacturerCode`.
+    pub const SET_MANUFACTURER_CODE: Self = Self(0x0015);
+    /// `formNetwork`.
+    pub const FORM_NETWORK: Self = Self(0x001e);
+    /// `getNetworkParameters`.
+    pub const GET_NETWORK_PARAMETERS: Self = Self(0x0028);
+    /// `getConfigurationValue`.
+    pub const GET_CONFIGURATION_VALUE: Self = Self(0x0052);
+    /// `setInitialSecurityState`.
+    pub const SET_INITIAL_SECURITY_STATE: Self = Self(0x0068);
+    /// `clearTransientLinkKeys`.
+    pub const CLEAR_TRANSIENT_LINK_KEYS: Self = Self(0x006b);
+    /// `getValue`.
+    pub const GET_VALUE: Self = Self(0x00aa);
+    /// `exportKey`.
+    pub const EXPORT_KEY: Self = Self(0x0114);
     /// `setConfigurationValue`.
     pub const SET_CONFIGURATION_VALUE: Self = Self(0x0053);
     /// `setPolicy`.
