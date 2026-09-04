@@ -20,9 +20,10 @@
 use std::time::Duration;
 
 use rsezsp::Ncp;
-use rsezsp::ezsp::command::{GetEui64, NetworkInit, SetConfigurationValue};
+use rsezsp::ezsp::command::{AddEndpoint, GetEui64, NetworkInit, SetConfigurationValue, SetPolicy};
+use rsezsp::transport::Transport;
 use rsezsp::transport::serial::{SerialSettings, SerialTransport};
-use rsezsp::types::network::{ConfigId, NetworkInitBitmask};
+use rsezsp::types::network::{ConfigId, Decision, NetworkInitBitmask, PolicyId};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -87,45 +88,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
     }
 
-    // Stack configuration *before* `networkInit`, and the order is not
-    // cosmetic. This NCP defaults `STACK_PROFILE` to 0, and resuming a stored
-    // ZigBee Pro network with a stack profile of 0 fails with
-    // `EMBER_NOT_JOINED` (0x93) -- the network is there, the stack just will
-    // not adopt it. Found by differential comparison: a working stack resumed
-    // the same dongle seconds later, and the only difference was that it had
-    // configured these first.
-    //
-    // EZSP refuses these writes once the network is up, so before is also the
-    // only time they can be sent.
-    let configuration = [
-        (ConfigId::STACK_PROFILE, 2u16),
-        (ConfigId::SECURITY_LEVEL, 5),
-    ];
-    let mut configured = true;
-    for (config_id, value) in configuration {
-        match ncp
-            .command(SetConfigurationValue { config_id, value })
-            .await
-        {
-            Ok(response) if response.status.is_ok() => {}
-            Ok(response) => {
-                println!("   {config_id:?} refused: {}", response.status);
-                configured = false;
-            }
-            Err(e) => {
-                println!("   {config_id:?} failed: {e}");
-                configured = false;
-            }
-        }
-    }
-    if configured {
-        step.pass("setConfigurationValue (stack profile, security level)");
-    } else {
-        step.fail(
-            "setConfigurationValue",
-            "the NCP refused a configuration item",
-        );
-    }
+    register_endpoint(&mut ncp, &mut step).await;
+    configure_stack(&mut ncp, &mut step).await;
+    configure_policies(&mut ncp, &mut step).await;
 
     // Resumes; never forms. A failure status here means "this NCP holds no
     // network", which is information rather than an error.
@@ -161,6 +126,128 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     step.report();
     Ok(())
+}
+
+/// Registers the coordinator's application endpoint.
+///
+/// Before the network comes up: EZSP refuses `addEndpoint` once it is, and a
+/// coordinator with no endpoint answers an active-endpoint request with an
+/// empty list -- so it reads as a node with no functionality rather than as a
+/// misconfiguration.
+async fn register_endpoint<T: Transport>(ncp: &mut Ncp<T>, step: &mut Checklist) {
+    // Endpoint 1, Home Automation profile, and the clusters a coordinator
+    // serves. Deliberately minimal: what a device needs to see, not a
+    // complete descriptor.
+    let command = AddEndpoint {
+        endpoint: 1,
+        profile_id: 0x0104,
+        device_id: 0x0065,
+        app_flags: 0,
+        input_clusters: vec![0x0000, 0x000a, 0x0019],
+        output_clusters: vec![0x0000, 0x0006, 0x0019],
+    };
+    match ncp.command(command).await {
+        Ok(response) if response.status.is_ok() => step.pass("addEndpoint"),
+        // A re-run re-registers the same endpoint, which some firmware
+        // refuses. Worth reporting distinctly from a dongle that stopped
+        // answering.
+        Ok(response) => {
+            println!("   refused: {} (already registered?)", response.status);
+            step.pass("addEndpoint (refused, reported cleanly)");
+        }
+        Err(e) => step.fail("addEndpoint", &e.to_string()),
+    }
+}
+
+/// Sets the stack configuration `networkInit` depends on.
+///
+/// The order is not cosmetic. This NCP defaults `STACK_PROFILE` to 0, and
+/// resuming a stored `ZigBee` Pro network with a stack profile of 0 fails with
+/// `EMBER_NOT_JOINED` -- the network is there, the stack just will not adopt
+/// it. Found by differential comparison against a working implementation.
+///
+/// EZSP also refuses these writes once the network is up, so before is the
+/// only time they can be sent at all.
+async fn configure_stack<T: Transport>(ncp: &mut Ncp<T>, step: &mut Checklist) {
+    let items = [
+        (ConfigId::STACK_PROFILE, 2u16),
+        (ConfigId::SECURITY_LEVEL, 5),
+    ];
+    let mut ok = true;
+    for (config_id, value) in items {
+        match ncp
+            .command(SetConfigurationValue { config_id, value })
+            .await
+        {
+            Ok(response) if response.status.is_ok() => {}
+            Ok(response) => {
+                println!("   {config_id:?} refused: {}", response.status);
+                ok = false;
+            }
+            Err(e) => {
+                println!("   {config_id:?} failed: {e}");
+                ok = false;
+            }
+        }
+    }
+    if ok {
+        step.pass("setConfigurationValue (stack profile, security level)");
+    } else {
+        step.fail(
+            "setConfigurationValue",
+            "the NCP refused a configuration item",
+        );
+    }
+}
+
+/// Sets the trust-centre policies that decide whether a device may join.
+///
+/// `permitJoining` only opens the MAC association window. Whether a device is
+/// *admitted*, and whether it is given the network key, is this decision.
+///
+/// The value is assembled from named bits rather than taken from a composite
+/// constant, because the historical trap is that a legacy enumeration called
+/// 0x00 `ALLOW_JOINS` while 0x00 on modern firmware is the default
+/// configuration -- which denies every join. A library offering that name for
+/// that value sets deny and logs allow.
+async fn configure_policies<T: Transport>(ncp: &mut Ncp<T>, step: &mut Checklist) {
+    let policies = [
+        (
+            PolicyId::TRUST_CENTER,
+            Decision::ALLOW_JOINS.union(Decision::ALLOW_UNSECURED_REJOINS),
+        ),
+        (
+            PolicyId::TC_KEY_REQUEST,
+            Decision::ALLOW_TC_KEY_REQUEST_SAME_KEY,
+        ),
+        (PolicyId::APP_KEY_REQUEST, Decision::DENY_APP_KEY_REQUESTS),
+    ];
+    let mut ok = true;
+    for (policy_id, decision) in policies {
+        match ncp
+            .command(SetPolicy {
+                policy_id,
+                decision,
+            })
+            .await
+        {
+            Ok(response) if response.status.is_ok() => {}
+            Ok(response) => {
+                println!("   {policy_id:?} refused: {}", response.status);
+                ok = false;
+            }
+            Err(e) => {
+                println!("   {policy_id:?} failed: {e}");
+                ok = false;
+            }
+        }
+    }
+    if ok {
+        println!("   trust centre: joins and unsecured rejoins allowed, link keys answered");
+        step.pass("setPolicy (trust centre, key requests)");
+    } else {
+        step.fail("setPolicy", "the NCP refused a policy");
+    }
 }
 
 /// Records what actually passed, so the summary cannot overstate it.
