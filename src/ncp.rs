@@ -74,12 +74,20 @@ pub struct Ncp<T: Transport> {
     /// hardware: a second `version` sent in the legacy format broke `getEui64`
     /// and everything after it.
     initial_version_sent: bool,
-    /// The format the pending command's response will arrive in.
+    /// The format the pending command's response will arrive in, if one is
+    /// pending.
     ///
     /// Needed because the answer to the bootstrap `version` command comes back
     /// in the legacy format, and by then the caller is already thinking in
     /// extended terms.
-    pending_format: HeaderFormat,
+    ///
+    /// `None` when nothing is outstanding, which is not the same as "extended"
+    /// even though that is what it resolves to: keeping them distinct means a
+    /// callback arriving while a *legacy* command is pending is not silently
+    /// parsed with the legacy header. Only the bootstrap `version` is ever
+    /// legacy, and callbacks cannot arrive before negotiation -- but encoding
+    /// that as an invariant rather than a coincidence costs nothing.
+    pending_format: Option<HeaderFormat>,
 }
 
 impl<T: Transport> Ncp<T> {
@@ -105,7 +113,7 @@ impl<T: Transport> Ncp<T> {
             callbacks: Vec::new(),
             initial_version_sent: false,
             response: None,
-            pending_format: HeaderFormat::Legacy,
+            pending_format: None,
         };
 
         ncp.reset().await?;
@@ -243,7 +251,7 @@ impl<T: Transport> Ncp<T> {
             HeaderFormat::Extended
         };
         let sequence = self.correlator.begin(C::ID)?;
-        self.pending_format = format;
+        self.pending_format = Some(format);
 
         let mut out = Writer::new(self.version);
         frame::write_header(&mut out, sequence, C::ID, format)?;
@@ -302,6 +310,27 @@ impl<T: Transport> Ncp<T> {
         outcome?;
         self.correlator.time_out()?;
         Err(EzspError::Timeout { frame_id: C::ID })
+    }
+
+    /// Reads for up to `timeout`, returning any callbacks that arrived.
+    ///
+    /// Returns as soon as the first callback arrives, or empty at the deadline.
+    ///
+    /// This exists because callbacks are the only way the NCP reports anything
+    /// it was not asked about -- a device joining, a message being delivered, a
+    /// frame arriving -- and without it they could only be collected as a side
+    /// effect of sending some unrelated command. Waiting for a join by polling
+    /// `getEui64` in a loop works and is obviously the wrong shape.
+    ///
+    /// # Errors
+    ///
+    /// [`EzspError::Transport`] if the transport fails. A deadline with nothing
+    /// received is `Ok(vec![])`, not an error: nothing happening is a normal
+    /// outcome and the caller decides whether it matters.
+    pub async fn poll(&mut self, timeout: Duration) -> Result<Vec<Callback>, EzspError> {
+        self.pump_until(timeout, |ncp| !ncp.callbacks.is_empty())
+            .await?;
+        Ok(self.take_callbacks())
     }
 
     /// The pending response's parameters, if it has arrived.
@@ -372,8 +401,11 @@ impl<T: Transport> Ncp<T> {
 
     /// Classifies one EZSP frame and files it.
     fn dispatch(&mut self, payload: &[u8]) {
-        tracing::debug!(bytes = ?payload, format = ?self.pending_format, "received EZSP frame");
-        let parsed = frame::parse(payload, self.pending_format);
+        tracing::debug!(bytes = ?payload, "received EZSP frame");
+        // With nothing pending, anything arriving is a callback, and those
+        // are extended once negotiation is done.
+        let format = self.pending_format.unwrap_or(HeaderFormat::Extended);
+        let parsed = frame::parse(payload, format);
         let Ok(parsed) = parsed else {
             tracing::debug!("undecodable EZSP frame");
             return;
@@ -381,6 +413,9 @@ impl<T: Transport> Ncp<T> {
         match self.correlator.classify(&parsed) {
             Classified::Response { parameters } => {
                 self.response = Some(parameters.to_vec());
+                // Nothing is outstanding now, so a frame arriving next is a
+                // callback and must not be parsed as this command's format.
+                self.pending_format = None;
             }
             Classified::Callback {
                 frame_id,

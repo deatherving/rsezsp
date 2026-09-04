@@ -3,6 +3,7 @@
 //! ```text
 //! cargo run --example startup -- /dev/ttyUSB0
 //! cargo run --example startup -- /dev/ttyUSB0 --permit-join
+//! cargo run --example startup -- /dev/ttyUSB0 --onoff 14913 on
 //! ```
 //!
 //! ```text
@@ -27,12 +28,13 @@ use std::time::Duration;
 
 use rsezsp::ezsp::callback::Callback;
 use rsezsp::ezsp::command::{
-    AddEndpoint, GetEui64, ImportTransientKey, NetworkInit, PermitJoining, SetConfigurationValue,
-    SetPolicy,
+    AddEndpoint, GetEui64, ImportTransientKey, NetworkInit, PermitJoining, SendUnicast,
+    SetConfigurationValue, SetPolicy,
 };
 use rsezsp::transport::Transport;
 use rsezsp::transport::serial::{SerialSettings, SerialTransport};
-use rsezsp::types::network::{ConfigId, Decision, NetworkInitBitmask, PolicyId};
+use rsezsp::types::aps::{ApsFrame, ApsOptions, UnicastType};
+use rsezsp::types::network::{ConfigId, Decision, NetworkInitBitmask, NodeId, PolicyId};
 use rsezsp::types::security::{SecurityKey, SecurityManFlags};
 use rsezsp::{Eui64, Ncp};
 
@@ -46,9 +48,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = args
         .iter()
         .find(|a| !a.starts_with("--"))
-        .ok_or("usage: startup <serial-path> [--permit-join]")?
+        .ok_or("usage: startup <serial-path> [--permit-join] [--onoff <nwk> on|off]")?
         .clone();
     let permit_join = args.iter().any(|a| a == "--permit-join");
+    // `--onoff <nwk> <on|off>`: the short address comes from a join callback,
+    // which `--permit-join` prints.
+    let onoff = args.iter().position(|a| a == "--onoff").and_then(|i| {
+        let nwk = args.get(i + 1)?.parse::<u16>().ok()?;
+        let on = matches!(args.get(i + 2).map(String::as_str), Some("on"));
+        Some((NodeId(nwk), on))
+    });
 
     let mut step = Checklist::new();
 
@@ -128,6 +137,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if permit_join {
         open_for_joining(&mut ncp, &mut step).await;
+    }
+
+    if let Some((node_id, on)) = onoff {
+        println!("\n=== commanding {node_id} ===");
+        send_onoff(&mut ncp, node_id, on, &mut step).await;
     }
 
     // Callbacks that arrived during startup. A stack coming up emits at least
@@ -309,28 +323,114 @@ async fn open_for_joining<T: Transport>(ncp: &mut Ncp<T>, step: &mut Checklist) 
     // is finite, and output that only appears afterwards cannot tell you
     // whether the device is being seen while there is still time to retry.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(240);
-    let mut joined = false;
+    let mut joined = None;
     while tokio::time::Instant::now() < deadline {
-        // A short poll rather than a long one: `take_callbacks` only drains
-        // what the last command's read loop happened to collect, so the
-        // network has to be given a reason to read.
-        let _ = ncp.command(GetEui64).await;
-        for callback in ncp.take_callbacks() {
+        let Ok(callbacks) = ncp.poll(Duration::from_secs(5)).await else {
+            break;
+        };
+        for callback in callbacks {
             println!("   {callback:?}");
-            if matches!(callback, Callback::TrustCenterJoin { .. }) {
-                joined = true;
+            if let Callback::TrustCenterJoin { node_id, eui64, .. } = callback {
+                joined = Some((node_id, eui64));
             }
         }
-        if joined {
+        if joined.is_some() {
             break;
         }
-        tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
-    if joined {
-        step.pass("device join (trustCenterJoin callback)");
+    match joined {
+        Some((node_id, eui64)) => {
+            step.pass("device join (trustCenterJoin callback)");
+            println!("\n   joined: {eui64} at {node_id}");
+            println!("   to command it:  --onoff {} on\n", node_id.0);
+        }
+        None => step.fail("device join", "no trustCenterJoin callback within 240s"),
+    }
+}
+
+/// Sends a `genOnOff` command to a joined device.
+///
+/// # This crate does not do ZCL
+///
+/// The three payload bytes below are a ZCL frame, hand-built here because
+/// `rsezsp` deliberately has no ZCL layer: it sends APS payloads and what is
+/// inside them is the caller's business. A real application would build this
+/// with a ZCL library. Doing it inline in an example is the honest way to show
+/// where the boundary is.
+///
+/// This physically actuates the device.
+async fn send_onoff<T: Transport>(
+    ncp: &mut Ncp<T>,
+    node_id: NodeId,
+    on: bool,
+    step: &mut Checklist,
+) {
+    // ZCL: frame control 0x01 (cluster-specific, client to server), a
+    // transaction sequence number, then the command -- 0x00 off, 0x01 on.
+    let zcl = vec![0x01, 0x42, u8::from(on)];
+
+    let command = SendUnicast {
+        unicast_type: UnicastType::Direct,
+        index_or_destination: node_id.0,
+        aps_frame: ApsFrame {
+            profile_id: 0x0104,
+            cluster_id: 0x0006,
+            source_endpoint: 1,
+            destination_endpoint: 1,
+            // Retry and route discovery: without retry a single lost frame
+            // reads as an unreachable device, and without route discovery the
+            // first message to a device behind a router fails.
+            options: ApsOptions::unicast_defaults(),
+            group_id: 0,
+            sequence: 0,
+        },
+        // Echoed back by the matching `messageSent` callback, which is how
+        // delivery is learned. The command's own response only says the NCP
+        // accepted the frame for sending.
+        message_tag: 0x01,
+        message: zcl,
+    };
+
+    let label = if on {
+        "sendUnicast (on)"
     } else {
-        step.fail("device join", "no trustCenterJoin callback within 240s");
+        "sendUnicast (off)"
+    };
+    match ncp.command(command).await {
+        Ok(response) if response.status.is_ok() => {
+            println!("   accepted, APS sequence {}", response.aps_sequence);
+            step.pass(label);
+        }
+        Ok(response) => step.fail(label, &response.status.to_string()),
+        Err(e) => step.fail(label, &e.to_string()),
+    }
+
+    // Delivery is reported separately and asynchronously. A sleepy device has
+    // to poll its parent before it hears anything, so this can take a moment
+    // -- and a failure here is the device not answering, not a bad frame.
+    println!("   waiting for messageSent...");
+    match ncp.poll(Duration::from_secs(10)).await {
+        Ok(callbacks) if callbacks.is_empty() => {
+            step.fail(
+                "messageSent callback",
+                "nothing within 10s (a sleepy device may not have polled)",
+            );
+        }
+        Ok(callbacks) => {
+            for callback in &callbacks {
+                println!("   {callback:?}");
+            }
+            let delivered = callbacks
+                .iter()
+                .any(|c| matches!(c, Callback::MessageSent { status, .. } if status.is_ok()));
+            if delivered {
+                step.pass("messageSent callback (delivered)");
+            } else {
+                step.fail("messageSent callback", "reported a delivery failure");
+            }
+        }
+        Err(e) => step.fail("messageSent callback", &e.to_string()),
     }
 }
 
