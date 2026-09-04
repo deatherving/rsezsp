@@ -1,0 +1,9 @@
+# The parse-path lints are denied for the library because a malformed frame
+# from a serial line must never take the process down. Inside tests, asserting
+# on `decode(..).expect(..)` is precisely how that invariant gets checked, so
+# relaxing them there keeps the lint meaningful where it matters instead of
+# training everyone to sprinkle allow attributes.
+allow-expect-in-tests = true
+allow-unwrap-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true

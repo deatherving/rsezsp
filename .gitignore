@@ -1,0 +1,12 @@
+/target
+Cargo.lock
+
+# cargo-fuzz working state. The targets are source; the corpus and crash
+# artifacts are local findings, and a corpus grows without bound. A crashing
+# input worth keeping belongs in tests/hardware_regression.rs, where it runs on
+# stable forever rather than only during a campaign.
+/fuzz/target
+/fuzz/corpus
+/fuzz/artifacts
+/fuzz/coverage
+/fuzz/Cargo.lock

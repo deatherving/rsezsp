@@ -1,0 +1,54 @@
+# Coverage-guided fuzz targets for the sans-I/O parsers.
+#
+# Excluded from the workspace: libFuzzer needs nightly, and making the whole
+# suite nightly-only to get fuzzing would be a bad trade. The deterministic
+# counterpart in tests/fuzz_regression.rs runs on stable every push.
+#
+#   cargo install cargo-fuzz
+#   cargo +nightly fuzz run ash_frame_decode -- -max_total_time=300
+#
+# A crash is written to fuzz/artifacts/<target>/ and replayed with
+#   cargo +nightly fuzz run <target> fuzz/artifacts/<target>/crash-<hash>
+#
+# Keep every crashing input permanently: add it to tests/fuzz_regression.rs so
+# it is checked on stable forever, not only when someone runs a campaign.
+[package]
+name = "rsezsp-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+rsezsp = { path = "..", default-features = false }
+
+[[bin]]
+name = "ash_frame_decode"
+path = "fuzz_targets/ash_frame_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ezsp_frame_decode"
+path = "fuzz_targets/ezsp_frame_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ezsp_types_decode"
+path = "fuzz_targets/ezsp_types_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ezsp_callback_decode"
+path = "fuzz_targets/ezsp_callback_decode.rs"
+test = false
+doc = false
+bench = false

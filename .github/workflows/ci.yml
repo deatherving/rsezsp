@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: fmt · clippy · test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo test --all-features
+      - run: cargo doc --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+      # The codecs are sans-I/O. Building without the runtime is what keeps
+      # that true rather than aspirational.
+      - run: cargo clippy --all-targets --no-default-features -- -D warnings
+
+  msrv:
+    name: minimum supported Rust version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.90
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --all-features
+
+  fuzz:
+    name: fuzz targets build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-fuzz
+      # Compile-only, plus a short smoke run. A target that stops building is
+      # a regression worth failing on; a long campaign is a separate,
+      # deliberate activity and does not belong on every push.
+      - run: cargo fuzz build
+      - run: cargo fuzz run ash_frame_decode -- -max_total_time=30
+      - run: cargo fuzz run ezsp_frame_decode -- -max_total_time=30
+      - run: cargo fuzz run ezsp_types_decode -- -max_total_time=30
+      - run: cargo fuzz run ezsp_callback_decode -- -max_total_time=30
