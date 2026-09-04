@@ -33,12 +33,14 @@ Milestone 1 is confirmed on real hardware:
 | ASH reset handshake | **PASS** |
 | EZSP version negotiation | **PASS** (v13) |
 | `getEui64` | **PASS** — `0x94a081fffed96e5c` |
+| `addEndpoint` | **PASS** |
 | `setConfigurationValue` | **PASS** |
+| `setPolicy` | **PASS** — joins and unsecured rejoins allowed |
 | `networkInit` (resume) | **PASS** — resumed the stored network |
 | `stackStatusHandler` callback | **PASS** — decoded as a callback, not a response |
 
-Not yet attempted on hardware: joining a device, sending a unicast, and
-recovery across a host restart. See [Hardware validation](#hardware-validation).
+The full coordinator bringup passes **8/8**. Not yet attempted on hardware:
+joining a device, sending a unicast, and recovery across a host restart. See [Hardware validation](#hardware-validation).
 
 ## Two properties the design is built around
 
@@ -70,12 +72,12 @@ keep it true.
 | command | id | hardware |
 |---|---|---|
 | `version` | `0x0000` | confirmed |
-| `addEndpoint` | `0x0002` | not yet |
+| `addEndpoint` | `0x0002` | confirmed |
 | `networkInit` | `0x0017` | confirmed |
 | `getEui64` | `0x0026` | confirmed |
 | `sendUnicast` | `0x0034` | not yet |
 | `setConfigurationValue` | `0x0053` | confirmed |
-| `setPolicy` | `0x0055` | not yet |
+| `setPolicy` | `0x0055` | confirmed |
 | `importTransientKey` | `0x0111` | not yet |
 
 ### Callbacks
@@ -160,7 +162,8 @@ blocking syscall.
 | version negotiation | yes | — | yes |
 | response/callback correlation | yes | — | yes |
 | `getEui64`, `networkInit`, `setConfigurationValue` | yes | yes | yes |
-| `addEndpoint`, `setPolicy`, `sendUnicast`, `importTransientKey` | yes | yes | **not yet** |
+| `addEndpoint`, `setPolicy` | yes | yes | yes |
+| `sendUnicast`, `importTransientKey` | yes | yes | **not yet** |
 | device join, commissioning | — | — | **not yet** |
 | recovery across a host restart | — | — | **not yet** |
 
