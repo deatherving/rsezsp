@@ -19,6 +19,40 @@ than a speculative feature.
   implicit.
 - **Bug fixes**, with a test that fails before and passes after.
 
+## What belongs in this crate
+
+`rsezsp` implements the host-to-NCP conversation: ASH framing and the EZSP
+command protocol. Nothing above that layer belongs here.
+
+**In scope:** EZSP commands and callbacks, their wire encodings, version
+boundaries, ASH framing and flow control, correlation, the serial transport,
+and the types those frames carry — APS headers, node ids, statuses, security
+manager structures.
+
+**Out of scope:** ZCL, ZDO interview logic, device definitions and quirks,
+attribute reporting policy, binding and group management as *behaviour*,
+network topology, MQTT, Home Assistant, and anything that decides what a
+Zigbee network *should* do.
+
+The distinction is not about which layer of the Zigbee stack a name comes
+from — it is about who decides. `sendUnicast` carries an APS payload, and the
+APS header is part of the frame this crate encodes, so `ApsFrame` belongs
+here. What goes *inside* that payload does not, and neither does the choice of
+when to send one.
+
+A useful test: if a change would need updating because a new device model
+behaves oddly, or because a Zigbee specification revision changed what a
+cluster means, it belongs in the layer above. Nothing here should have an
+opinion about a device.
+
+The `startup` example deliberately hand-builds three ZCL bytes to actuate a
+real device, with a comment saying why. That is the boundary being
+demonstrated, not crossed: the example is the caller, and the caller is where
+ZCL lives.
+
+This is enforced by review rather than by the compiler, so please raise it if
+you see it slipping.
+
 ## Where to start
 
 These are real open tasks, not filler. Each says what it needs, so you can

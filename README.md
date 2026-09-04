@@ -173,13 +173,16 @@ keep it true.
 | `setManufacturerCode` | `0x0015` | confirmed |
 | `formNetwork` | `0x001e` | not yet |
 | `getNetworkParameters` | `0x0028` | confirmed |
+| `networkState` | `0x0018` | confirmed |
 | `sendUnicast` | `0x0034` | confirmed |
 | `sendBroadcast` | `0x0036` | not yet |
+| `sendMulticast` | `0x0038` | not yet |
 | `getConfigurationValue` | `0x0052` | confirmed |
 | `setInitialSecurityState` | `0x0068` | not yet |
 | `clearTransientLinkKeys` | `0x006b` | confirmed |
 | `getValue` | `0x00aa` | confirmed |
 | `exportKey` | `0x0114` | confirmed |
+| `getNetworkKeyInfo` | `0x0116` | confirmed |
 | `setConfigurationValue` | `0x0053` | confirmed |
 | `setPolicy` | `0x0055` | confirmed |
 | `importTransientKey` | `0x0111` | confirmed |
