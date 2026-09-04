@@ -47,6 +47,12 @@ impl FrameId {
     pub const SET_MANUFACTURER_CODE: Self = Self(0x0015);
     /// `formNetwork`.
     pub const FORM_NETWORK: Self = Self(0x001e);
+    /// `networkState`.
+    pub const NETWORK_STATE: Self = Self(0x0018);
+    /// `sendMulticast`.
+    pub const SEND_MULTICAST: Self = Self(0x0038);
+    /// `getNetworkKeyInfo`.
+    pub const GET_NETWORK_KEY_INFO: Self = Self(0x0116);
     /// `getNetworkParameters`.
     pub const GET_NETWORK_PARAMETERS: Self = Self(0x0028);
     /// `getConfigurationValue`.

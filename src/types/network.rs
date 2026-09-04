@@ -369,3 +369,45 @@ impl ValueId {
     /// The NCP firmware's version string and build number.
     pub const VERSION_INFO: Self = Self(0x11);
 }
+
+/// What the stack is doing, from `networkState`.
+///
+/// Not a status code: this is an `EmberNetworkStatus`, a small enumeration that
+/// stayed one byte when status codes widened at EZSP 14.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NetworkStatus(pub u8);
+
+impl NetworkStatus {
+    /// Not on a network.
+    ///
+    /// Reported until `networkInit` has run, even when a network is stored.
+    pub const NO_NETWORK: Self = Self(0x00);
+    /// Joining or forming.
+    pub const JOINING: Self = Self(0x01);
+    /// On a network.
+    pub const JOINED_NETWORK: Self = Self(0x02);
+    /// On a network but with no parent.
+    pub const JOINED_NETWORK_NO_PARENT: Self = Self(0x03);
+    /// Leaving.
+    pub const LEAVING_NETWORK: Self = Self(0x04);
+
+    /// Whether the stack is on a network.
+    #[must_use]
+    pub const fn is_joined(self) -> bool {
+        matches!(self, Self::JOINED_NETWORK | Self::JOINED_NETWORK_NO_PARENT)
+    }
+}
+
+impl core::fmt::Display for NetworkStatus {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let name = match *self {
+            Self::NO_NETWORK => "no network",
+            Self::JOINING => "joining",
+            Self::JOINED_NETWORK => "joined",
+            Self::JOINED_NETWORK_NO_PARENT => "joined, no parent",
+            Self::LEAVING_NETWORK => "leaving",
+            _ => return write!(f, "network status {:#04x}", self.0),
+        };
+        f.write_str(name)
+    }
+}

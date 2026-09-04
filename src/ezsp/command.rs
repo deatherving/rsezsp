@@ -23,7 +23,8 @@ use crate::ezsp::frame::FrameId;
 use crate::ezsp::version::ProtocolVersion;
 use crate::types::aps::{ApsFrame, UnicastType};
 use crate::types::network::{
-    ConfigId, Decision, Eui64, NetworkInitBitmask, NetworkParameters, NodeId, PolicyId, ValueId,
+    ConfigId, Decision, Eui64, NetworkInitBitmask, NetworkParameters, NetworkStatus, NodeId,
+    PolicyId, ValueId,
 };
 use crate::types::security::{
     InitialSecurityState, SecurityKey, SecurityManContext, SecurityManFlags,
@@ -958,6 +959,173 @@ impl EzspDecode for SendBroadcastResponse {
 impl Command for SendBroadcast {
     type Response = SendBroadcastResponse;
     const ID: FrameId = FrameId::SEND_BROADCAST;
+}
+
+/// `networkState` — what the stack is doing. Frame id `0x0018`.
+///
+/// # Only meaningful after `networkInit`
+///
+/// This reports `NO_NETWORK` on a coordinator that has a perfectly good stored
+/// network, right up until [`NetworkInit`] has run. Reading it first and
+/// believing the answer is how a stack forms a new network over an existing
+/// one and orphans every joined device.
+///
+/// Reference: UG100.
+/// Hardware: confirmed (EZSP 13).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NetworkState;
+
+/// What the stack is doing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NetworkStateResponse {
+    /// The raw state. See [`NetworkStatus`].
+    pub state: NetworkStatus,
+}
+
+impl EzspEncode for NetworkState {
+    fn encode(&self, _out: &mut Writer) -> Result<(), EzspError> {
+        Ok(())
+    }
+}
+
+impl EzspDecode for NetworkStateResponse {
+    fn decode(input: &mut Reader<'_>) -> Result<Self, EzspError> {
+        // A one-byte enumeration at every version: this is an `EmberNetworkStatus`
+        // rather than a status code, so it did not widen at EZSP 14.
+        Ok(Self {
+            state: NetworkStatus(input.u8()?),
+        })
+    }
+}
+
+impl Command for NetworkState {
+    type Response = NetworkStateResponse;
+    const ID: FrameId = FrameId::NETWORK_STATE;
+}
+
+/// `sendMulticast` — send to a group. Frame id `0x0038`.
+///
+/// The group id travels in the APS frame rather than as an argument, which is
+/// easy to miss: a multicast whose `aps_frame.group_id` is left at zero is
+/// addressed to group zero, not to the group the caller meant.
+///
+/// Reference: UG100; message tag width follows the same boundary as
+/// [`SendUnicast`].
+/// Hardware: not yet — needs a device bound into a group.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SendMulticast {
+    /// The APS header, carrying the destination group in `group_id`.
+    pub aps_frame: ApsFrame,
+    /// Hops before the message stops being forwarded. `0` for the default.
+    pub hops: u8,
+    /// How far the message travels through nodes that are not group members.
+    pub nonmember_radius: u8,
+    /// Echoed back by the matching `messageSent` callback.
+    pub message_tag: u16,
+    /// The application payload.
+    pub message: Vec<u8>,
+}
+
+/// Whether the multicast was accepted for sending.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SendMulticastResponse {
+    /// The NCP's answer.
+    pub status: SlStatus,
+    /// The APS sequence number it was sent with.
+    pub aps_sequence: u8,
+}
+
+impl EzspEncode for SendMulticast {
+    fn encode(&self, out: &mut Writer) -> Result<(), EzspError> {
+        self.aps_frame.encode(out)?;
+        out.u8(self.hops);
+        out.u8(self.nonmember_radius);
+        if out.version().has_wide_message_tag() {
+            out.u16(self.message_tag);
+        } else {
+            #[allow(clippy::cast_possible_truncation)]
+            out.u8((self.message_tag & 0xff) as u8);
+        }
+        out.length_prefixed(&self.message)
+    }
+}
+
+impl EzspDecode for SendMulticastResponse {
+    fn decode(input: &mut Reader<'_>) -> Result<Self, EzspError> {
+        Ok(Self {
+            status: SlStatus::decode(input)?,
+            aps_sequence: input.u8()?,
+        })
+    }
+}
+
+impl Command for SendMulticast {
+    type Response = SendMulticastResponse;
+    const ID: FrameId = FrameId::SEND_MULTICAST;
+}
+
+/// `getNetworkKeyInfo` — the network key's sequence number and frame counter.
+/// Frame id `0x0116`.
+///
+/// # Why the frame counter matters
+///
+/// The outgoing frame counter is the field whose loss breaks a network.
+/// Devices reject a frame whose counter is not higher than the last one they
+/// saw, so a coordinator restored with a counter lower than the one its devices
+/// remember is ignored by every one of them -- while looking, from its own
+/// side, entirely healthy.
+///
+/// This is security-manager state rather than a network parameter, which is why
+/// it needs its own call rather than coming back from
+/// [`GetNetworkParameters`].
+///
+/// Reference: UG100 security manager API.
+/// Hardware: confirmed (EZSP 13).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetNetworkKeyInfo;
+
+/// The network key's metadata. Not the key itself — see [`ExportKey`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetNetworkKeyInfoResponse {
+    /// The NCP's answer. Four bytes at every version, as for every
+    /// security-manager command.
+    pub status: SlStatus,
+    /// Whether a network key is set at all.
+    pub network_key_set: bool,
+    /// Whether an alternate key is set.
+    pub alternate_network_key_set: bool,
+    /// The key's sequence number.
+    pub network_key_sequence_number: u8,
+    /// The alternate key's sequence number.
+    pub alt_network_key_sequence_number: u8,
+    /// The outgoing frame counter.
+    pub network_key_frame_counter: u32,
+}
+
+impl EzspEncode for GetNetworkKeyInfo {
+    fn encode(&self, _out: &mut Writer) -> Result<(), EzspError> {
+        Ok(())
+    }
+}
+
+impl EzspDecode for GetNetworkKeyInfoResponse {
+    fn decode(input: &mut Reader<'_>) -> Result<Self, EzspError> {
+        Ok(Self {
+            status: SlStatus(input.u32()?),
+            // Booleans on the wire are a byte each. Any non-zero value is true;
+            // firmware is not obliged to send exactly 1.
+            network_key_set: input.u8()? != 0,
+            alternate_network_key_set: input.u8()? != 0,
+            network_key_sequence_number: input.u8()?,
+            alt_network_key_sequence_number: input.u8()?,
+            network_key_frame_counter: input.u32()?,
+        })
+    }
+}
+
+impl Command for GetNetworkKeyInfo {
+    type Response = GetNetworkKeyInfoResponse;
+    const ID: FrameId = FrameId::GET_NETWORK_KEY_INFO;
 }
 
 #[cfg(test)]
