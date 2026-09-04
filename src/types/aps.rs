@@ -41,15 +41,6 @@ impl ApsOptions {
     pub const fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
     }
-
-    /// The options a working stack sets for a unicast.
-    ///
-    /// Without retry a single lost frame reads as an unreachable device;
-    /// without route discovery the first message to a device behind a router
-    /// fails.
-    pub const fn unicast_defaults() -> Self {
-        Self(Self::RETRY.0 | Self::ENABLE_ROUTE_DISCOVERY.0)
-    }
 }
 
 /// An APS frame header.
@@ -162,7 +153,7 @@ mod tests {
             cluster_id: 0x0006,
             source_endpoint: 1,
             destination_endpoint: 1,
-            options: ApsOptions::unicast_defaults(),
+            options: ApsOptions::RETRY.union(ApsOptions::ENABLE_ROUTE_DISCOVERY),
             group_id: 0,
             sequence: 0,
         };
@@ -210,12 +201,14 @@ mod tests {
     }
 
     #[test]
-    fn unicast_defaults_carry_retry_and_route_discovery() {
-        let options = ApsOptions::unicast_defaults();
+    fn options_combine_without_losing_bits() {
+        // No `unicast_defaults()` here on purpose. Which options a message is
+        // sent with is a decision about how the network should behave, and
+        // this crate is the driver -- it carries the bits and does not choose
+        // them. The caller says what it wants.
+        let options = ApsOptions::RETRY.union(ApsOptions::ENABLE_ROUTE_DISCOVERY);
         assert!(options.contains(ApsOptions::RETRY));
         assert!(options.contains(ApsOptions::ENABLE_ROUTE_DISCOVERY));
-        // And nothing else: an option set here is a decision, not a default
-        // to be widened by accident.
         assert_eq!(options.0, 0x0140);
     }
 }

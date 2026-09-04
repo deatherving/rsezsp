@@ -392,10 +392,12 @@ async fn send_onoff<T: Transport>(
             cluster_id: 0x0006,
             source_endpoint: 1,
             destination_endpoint: 1,
-            // Retry and route discovery: without retry a single lost frame
-            // reads as an unreachable device, and without route discovery the
-            // first message to a device behind a router fails.
-            options: ApsOptions::unicast_defaults(),
+            // The caller chooses these, not the crate: without retry a single
+            // lost frame reads as an unreachable device, and without route
+            // discovery the first message to a device behind a router fails.
+            // Both are decisions about how the network should behave, which is
+            // the application's business rather than the driver's.
+            options: ApsOptions::RETRY.union(ApsOptions::ENABLE_ROUTE_DISCOVERY),
             group_id: 0,
             sequence: 0,
         },
