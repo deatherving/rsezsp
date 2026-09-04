@@ -35,6 +35,8 @@ impl FrameId {
     pub const ADD_ENDPOINT: Self = Self(0x0002);
     /// `networkInit`.
     pub const NETWORK_INIT: Self = Self(0x0017);
+    /// `permitJoining`.
+    pub const PERMIT_JOINING: Self = Self(0x0022);
     /// `getEui64`.
     pub const GET_EUI64: Self = Self(0x0026);
     /// `sendUnicast`.
@@ -69,6 +71,7 @@ impl FrameId {
             Self::VERSION => "version",
             Self::ADD_ENDPOINT => "addEndpoint",
             Self::NETWORK_INIT => "networkInit",
+            Self::PERMIT_JOINING => "permitJoining",
             Self::GET_EUI64 => "getEui64",
             Self::SEND_UNICAST => "sendUnicast",
             Self::SET_CONFIGURATION_VALUE => "setConfigurationValue",

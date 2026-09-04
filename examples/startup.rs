@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! cargo run --example startup -- /dev/ttyUSB0
+//! cargo run --example startup -- /dev/ttyUSB0 --permit-join
 //! ```
 //!
 //! ```text
@@ -16,14 +17,24 @@
 //! Read-only apart from `networkInit`, which resumes a network the NCP already
 //! holds and never forms one. Nothing here writes to the dongle's tokens, so it
 //! is safe to run against a coordinator with devices joined to it.
+//!
+//! `--permit-join` opens the network for four minutes and installs the
+//! well-known commissioning key for the duration, then reports whatever
+//! callbacks arrive. That is the only mode that changes anything observable
+//! from outside, and it undoes itself when the window closes.
 
 use std::time::Duration;
 
-use rsezsp::Ncp;
-use rsezsp::ezsp::command::{AddEndpoint, GetEui64, NetworkInit, SetConfigurationValue, SetPolicy};
+use rsezsp::ezsp::callback::Callback;
+use rsezsp::ezsp::command::{
+    AddEndpoint, GetEui64, ImportTransientKey, NetworkInit, PermitJoining, SetConfigurationValue,
+    SetPolicy,
+};
 use rsezsp::transport::Transport;
 use rsezsp::transport::serial::{SerialSettings, SerialTransport};
 use rsezsp::types::network::{ConfigId, Decision, NetworkInitBitmask, PolicyId};
+use rsezsp::types::security::{SecurityKey, SecurityManFlags};
+use rsezsp::{Eui64, Ncp};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -31,9 +42,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()))
         .init();
 
-    let path = std::env::args()
-        .nth(1)
-        .ok_or("usage: startup <serial-path>")?;
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let path = args
+        .iter()
+        .find(|a| !a.starts_with("--"))
+        .ok_or("usage: startup <serial-path> [--permit-join]")?
+        .clone();
+    let permit_join = args.iter().any(|a| a == "--permit-join");
 
     let mut step = Checklist::new();
 
@@ -109,6 +124,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             step.pass("networkInit (no network, reported cleanly)");
         }
         Err(e) => step.fail("networkInit", &e.to_string()),
+    }
+
+    if permit_join {
+        open_for_joining(&mut ncp, &mut step).await;
     }
 
     // Callbacks that arrived during startup. A stack coming up emits at least
@@ -247,6 +266,71 @@ async fn configure_policies<T: Transport>(ncp: &mut Ncp<T>, step: &mut Checklist
         step.pass("setPolicy (trust centre, key requests)");
     } else {
         step.fail("setPolicy", "the NCP refused a policy");
+    }
+}
+
+/// Opens the network for joining, and watches what arrives.
+///
+/// Two commands, because either alone produces an ambiguous result. The
+/// transient key is what a Zigbee 3.0 device without an install code uses to
+/// protect the one exchange in which it receives the network key: without it a
+/// device joins at the MAC layer, cannot finish commissioning, and rejoins
+/// every few seconds indefinitely -- while every call here reports success.
+///
+/// The key is well-known and public by design (`ZigBeeAlliance09`). The
+/// security it provides is that the window in which it is accepted is short
+/// and operator-initiated.
+async fn open_for_joining<T: Transport>(ncp: &mut Ncp<T>, step: &mut Checklist) {
+    match ncp
+        .command(ImportTransientKey {
+            // Whichever device joins: which one that will be is not known
+            // until it does. A specific address here is the install-code flow.
+            eui64: Eui64::WILDCARD,
+            key: SecurityKey::ZIGBEE_ALLIANCE_09,
+            flags: SecurityManFlags::NONE,
+        })
+        .await
+    {
+        Ok(response) if response.status.is_ok() => step.pass("importTransientKey"),
+        Ok(response) => step.fail("importTransientKey", &response.status.to_string()),
+        Err(e) => step.fail("importTransientKey", &e.to_string()),
+    }
+
+    match ncp.command(PermitJoining::for_seconds(240)).await {
+        Ok(response) if response.status.is_ok() => {
+            step.pass("permitJoining (240s)");
+            println!("\n   put the device in pairing mode now\n");
+        }
+        Ok(response) => step.fail("permitJoining", &response.status.to_string()),
+        Err(e) => step.fail("permitJoining", &e.to_string()),
+    }
+
+    // Streamed as they arrive rather than collected at the end: a join window
+    // is finite, and output that only appears afterwards cannot tell you
+    // whether the device is being seen while there is still time to retry.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(240);
+    let mut joined = false;
+    while tokio::time::Instant::now() < deadline {
+        // A short poll rather than a long one: `take_callbacks` only drains
+        // what the last command's read loop happened to collect, so the
+        // network has to be given a reason to read.
+        let _ = ncp.command(GetEui64).await;
+        for callback in ncp.take_callbacks() {
+            println!("   {callback:?}");
+            if matches!(callback, Callback::TrustCenterJoin { .. }) {
+                joined = true;
+            }
+        }
+        if joined {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
+    if joined {
+        step.pass("device join (trustCenterJoin callback)");
+    } else {
+        step.fail("device join", "no trustCenterJoin callback within 240s");
     }
 }
 
