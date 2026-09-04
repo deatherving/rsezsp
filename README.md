@@ -170,7 +170,16 @@ keep it true.
 | `networkInit` | `0x0017` | confirmed |
 | `getEui64` | `0x0026` | confirmed |
 | `permitJoining` | `0x0022` | confirmed |
+| `setManufacturerCode` | `0x0015` | confirmed |
+| `formNetwork` | `0x001e` | not yet |
+| `getNetworkParameters` | `0x0028` | confirmed |
 | `sendUnicast` | `0x0034` | confirmed |
+| `sendBroadcast` | `0x0036` | not yet |
+| `getConfigurationValue` | `0x0052` | confirmed |
+| `setInitialSecurityState` | `0x0068` | not yet |
+| `clearTransientLinkKeys` | `0x006b` | confirmed |
+| `getValue` | `0x00aa` | confirmed |
+| `exportKey` | `0x0114` | confirmed |
 | `setConfigurationValue` | `0x0053` | confirmed |
 | `setPolicy` | `0x0055` | confirmed |
 | `importTransientKey` | `0x0111` | confirmed |

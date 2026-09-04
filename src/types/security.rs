@@ -1,7 +1,8 @@
 //! Key material.
 
-use crate::ezsp::codec::{EzspEncode, Writer};
+use crate::ezsp::codec::{EzspDecode, EzspEncode, Reader, Writer};
 use crate::ezsp::error::EzspError;
+use crate::types::network::Eui64;
 
 /// A 128-bit key.
 ///
@@ -99,5 +100,151 @@ mod tests {
             .encode(&mut out)
             .expect("encodes");
         assert_eq!(out.as_slice(), b"ZigBeeAlliance09");
+    }
+}
+
+impl EzspDecode for SecurityKey {
+    fn decode(input: &mut Reader<'_>) -> Result<Self, EzspError> {
+        Ok(Self::new(input.array::<16>()?))
+    }
+}
+
+/// Which key the security manager should act on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SecurityKeyType(pub u8);
+
+impl SecurityKeyType {
+    /// The current network key.
+    pub const NETWORK: Self = Self(0x01);
+    /// The trust centre link key.
+    pub const TC_LINK: Self = Self(0x02);
+}
+
+/// Which key to export, and any qualifiers on it.
+///
+/// The wire layout is fixed even though most fields are unused for any given
+/// key type -- `psa_key_alg_permission` in particular is four bytes that a
+/// caller reading the network key has no reason to think about, but omitting
+/// them shifts the status that follows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SecurityManContext {
+    /// Which key.
+    pub core_key_type: SecurityKeyType,
+    /// Index into a key table, when the type uses one.
+    pub key_index: u8,
+    /// Derived key type. `0` for none.
+    pub derived_type: u8,
+    /// The device the key belongs to, where that applies.
+    pub eui64: Eui64,
+    /// Which network, on a multi-network build. `0` otherwise.
+    pub multi_network_index: u8,
+    /// Which of the fields above are meaningful.
+    pub flags: SecurityManFlags,
+    /// PSA algorithm permissions. `0` unless you have a reason.
+    pub psa_key_alg_permission: u32,
+}
+
+impl SecurityManContext {
+    /// A context that reads the current network key.
+    #[must_use]
+    pub const fn network_key() -> Self {
+        Self {
+            core_key_type: SecurityKeyType::NETWORK,
+            key_index: 0,
+            derived_type: 0,
+            eui64: Eui64::new(0),
+            multi_network_index: 0,
+            flags: SecurityManFlags::NONE,
+            psa_key_alg_permission: 0,
+        }
+    }
+}
+
+impl EzspEncode for SecurityManContext {
+    fn encode(&self, out: &mut Writer) -> Result<(), EzspError> {
+        out.u8(self.core_key_type.0);
+        out.u8(self.key_index);
+        out.u8(self.derived_type);
+        self.eui64.encode(out)?;
+        out.u8(self.multi_network_index);
+        out.u8(self.flags.0);
+        out.u32(self.psa_key_alg_permission);
+        Ok(())
+    }
+}
+
+impl EzspDecode for SecurityManContext {
+    fn decode(input: &mut Reader<'_>) -> Result<Self, EzspError> {
+        Ok(Self {
+            core_key_type: SecurityKeyType(input.u8()?),
+            key_index: input.u8()?,
+            derived_type: input.u8()?,
+            eui64: Eui64::decode(input)?,
+            multi_network_index: input.u8()?,
+            flags: SecurityManFlags(input.u8()?),
+            psa_key_alg_permission: input.u32()?,
+        })
+    }
+}
+
+/// Flags for `setInitialSecurityState`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InitialSecurityBitmask(pub u16);
+
+impl InitialSecurityBitmask {
+    /// A trust centre global link key is in use.
+    pub const TRUST_CENTER_GLOBAL_LINK_KEY: Self = Self(0x0004);
+    /// The preconfigured key is a network key, not a link key.
+    pub const PRECONFIGURED_NETWORK_KEY_MODE: Self = Self(0x0008);
+    /// `preconfigured_key` is set.
+    pub const HAVE_PRECONFIGURED_KEY: Self = Self(0x0100);
+    /// `network_key` is set.
+    pub const HAVE_NETWORK_KEY: Self = Self(0x0200);
+    /// Ask for a link key when joining.
+    pub const GET_LINK_KEY_WHEN_JOINING: Self = Self(0x0400);
+    /// Require the network key to arrive encrypted.
+    pub const REQUIRE_ENCRYPTED_KEY: Self = Self(0x0800);
+    /// Do not reset frame counters.
+    ///
+    /// Set this when restoring a network rather than creating one. Resetting
+    /// the counters on a network that already has joined devices makes every
+    /// one of them reject the coordinator's frames as replays.
+    pub const NO_FRAME_COUNTER_RESET: Self = Self(0x1000);
+
+    /// Combines two bitmasks.
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    /// Whether every bit in `other` is set.
+    #[must_use]
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+}
+
+/// The security configuration a coordinator forms a network with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InitialSecurityState {
+    /// Which of the fields below are meaningful, and how the stack behaves.
+    pub bitmask: InitialSecurityBitmask,
+    /// The preconfigured link key.
+    pub preconfigured_key: SecurityKey,
+    /// The network key.
+    pub network_key: SecurityKey,
+    /// The network key's sequence number.
+    pub network_key_sequence_number: u8,
+    /// The trust centre's address, when one is preconfigured.
+    pub preconfigured_trust_center_eui64: Eui64,
+}
+
+impl EzspEncode for InitialSecurityState {
+    fn encode(&self, out: &mut Writer) -> Result<(), EzspError> {
+        out.u16(self.bitmask.0);
+        self.preconfigured_key.encode(out)?;
+        self.network_key.encode(out)?;
+        out.u8(self.network_key_sequence_number);
+        self.preconfigured_trust_center_eui64.encode(out)
     }
 }
