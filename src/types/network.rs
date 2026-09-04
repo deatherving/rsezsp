@@ -9,7 +9,7 @@ use crate::ezsp::error::EzspError;
 /// sends it. Keeping both straight in one place is deliberate: the two forms
 /// look identical in a debugger and a mix-up produces an address that is valid,
 /// wrong, and byte-reversed -- which reads as a completely different device.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct Eui64(u64);
 
 impl Eui64 {
@@ -43,6 +43,17 @@ impl core::fmt::Display for Eui64 {
     }
 }
 
+impl core::fmt::Debug for Eui64 {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // Same as `Display`, not the derived form. A derived `Debug` prints the
+        // inner `u64` in decimal, and a Zigbee address in decimal is unusable:
+        // it cannot be compared against a label, a log line from another
+        // implementation, or a datasheet. Noticed when a real join callback
+        // reported `Eui64(11871831752037302271)`.
+        write!(f, "{self}")
+    }
+}
+
 impl EzspEncode for Eui64 {
     fn encode(&self, out: &mut Writer) -> Result<(), EzspError> {
         out.bytes(&self.to_wire());
@@ -57,7 +68,7 @@ impl EzspDecode for Eui64 {
 }
 
 /// A 16-bit network (short) address.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct NodeId(pub u16);
 
 impl NodeId {
@@ -69,6 +80,20 @@ impl NodeId {
     pub const BROADCAST_RX_ON_WHEN_IDLE: Self = Self(0xfffd);
     /// Broadcast to routers and the coordinator.
     pub const BROADCAST_ROUTERS: Self = Self(0xfffc);
+}
+
+impl core::fmt::Debug for NodeId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // Hex for the same reason: short addresses are written and discussed in
+        // hex everywhere, and `0x3a41` is recognisable where `14913` is not.
+        write!(f, "{:#06x}", self.0)
+    }
+}
+
+impl core::fmt::Display for NodeId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{:#06x}", self.0)
+    }
 }
 
 impl EzspEncode for NodeId {
@@ -226,6 +251,21 @@ mod tests {
         );
         assert_eq!(Eui64::from_wire(address.to_wire()), address);
         assert_eq!(address.to_string(), "0x94a081fffed96e5c");
+    }
+
+    #[test]
+    fn addresses_print_in_hex_in_both_forms() {
+        // A derived `Debug` prints the inner integer in decimal, and an
+        // address in decimal cannot be compared against a device label, a log
+        // line from another implementation, or a datasheet. Noticed when a
+        // real join callback reported `Eui64(11871831752037302271)`.
+        let address = Eui64::new(0xa4c1_3814_2d62_ffff);
+        assert_eq!(format!("{address}"), "0xa4c138142d62ffff");
+        assert_eq!(format!("{address:?}"), "0xa4c138142d62ffff");
+
+        let node = NodeId(14913);
+        assert_eq!(format!("{node:?}"), "0x3a41");
+        assert_eq!(format!("{node}"), "0x3a41");
     }
 
     #[test]

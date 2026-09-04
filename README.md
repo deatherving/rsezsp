@@ -38,9 +38,14 @@ Milestone 1 is confirmed on real hardware:
 | `setPolicy` | **PASS** — joins and unsecured rejoins allowed |
 | `networkInit` (resume) | **PASS** — resumed the stored network |
 | `stackStatusHandler` callback | **PASS** — decoded as a callback, not a response |
+| `importTransientKey` | **PASS** |
+| `permitJoining` | **PASS** — 240s window |
+| **a real device joined** | **PASS** — `trustCenterJoin` for `0xa4c138142d62ffff` |
 
-The full coordinator bringup passes **8/8**. Not yet attempted on hardware:
-joining a device, sending a unicast, and recovery across a host restart. See [Hardware validation](#hardware-validation).
+Coordinator bringup passes **8/8**, and with `--permit-join` a real device
+joins and its `trustCenterJoin` callback decodes: **10/10**. Not yet attempted
+on hardware: sending a unicast to the joined device, and recovery across a host
+restart. See [Hardware validation](#hardware-validation).
 
 ## Two properties the design is built around
 
@@ -75,14 +80,15 @@ keep it true.
 | `addEndpoint` | `0x0002` | confirmed |
 | `networkInit` | `0x0017` | confirmed |
 | `getEui64` | `0x0026` | confirmed |
+| `permitJoining` | `0x0022` | confirmed |
 | `sendUnicast` | `0x0034` | not yet |
 | `setConfigurationValue` | `0x0053` | confirmed |
 | `setPolicy` | `0x0055` | confirmed |
-| `importTransientKey` | `0x0111` | not yet |
+| `importTransientKey` | `0x0111` | confirmed |
 
 ### Callbacks
 
-`stackStatusHandler` (confirmed), `trustCenterJoinHandler`,
+`stackStatusHandler` (confirmed), `trustCenterJoinHandler` (confirmed),
 `incomingMessageHandler`, `messageSentHandler`. A callback this build does not
 decode is carried through as `Callback::Unknown` with its bytes intact rather
 than guessed at.
@@ -127,10 +133,10 @@ against the same dongle seconds later and comparing.
 
 | | |
 |---|---|
-| unit and integration tests | **111** |
+| unit and integration tests | **114** |
 | fuzz targets | 4 |
 | fuzz executions to date | ~89.2M, no crashes |
-| hardware-confirmed paths | milestone 1, end to end |
+| hardware-confirmed paths | bringup end to end, plus a real device join |
 
 Fuzzing is part of the build rather than an occasional exercise. CI compiles
 every target and runs a 30-second smoke campaign on each; long campaigns are a
@@ -163,8 +169,9 @@ blocking syscall.
 | response/callback correlation | yes | — | yes |
 | `getEui64`, `networkInit`, `setConfigurationValue` | yes | yes | yes |
 | `addEndpoint`, `setPolicy` | yes | yes | yes |
-| `sendUnicast`, `importTransientKey` | yes | yes | **not yet** |
-| device join, commissioning | — | — | **not yet** |
+| `permitJoining`, `importTransientKey` | yes | yes | yes |
+| `sendUnicast` | yes | yes | **not yet** |
+| device join, commissioning | yes | — | yes |
 | recovery across a host restart | — | — | **not yet** |
 
 A row is only marked hardware-confirmed if it ran against the dongle. "The
@@ -186,7 +193,8 @@ found. No GPL source was read or copied.
 
 ## Known limitations
 
-- Milestones 2 (device join and control) and 3 (restart recovery) are not done.
+- Milestone 2 is half done: a device joins, but nothing has been sent to it
+  yet. Milestone 3 (restart recovery) is not started.
 - One command in flight at a time. EZSP over ASH has a small window and the NCP
   answers in order, so pipelining would buy little and cost certainty about
   which frame answers which command.

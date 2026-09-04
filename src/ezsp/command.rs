@@ -182,6 +182,79 @@ impl Command for NetworkInit {
     const ID: FrameId = FrameId::NETWORK_INIT;
 }
 
+/// `permitJoining` — open the network for joining. Frame id `0x0022`.
+///
+/// This opens the MAC association window and nothing more. Whether a device is
+/// *admitted*, and whether it is given the network key, is decided by the
+/// trust-centre policy — so `permitJoining` alone produces a window in which
+/// devices try and are silently refused. A Zigbee 3.0 device additionally
+/// needs a transient commissioning key in place; see [`ImportTransientKey`].
+///
+/// Reference: UG100; cross-checked against `zigbee-herdsman`.
+/// Hardware: not yet confirmed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PermitJoining {
+    /// How long to stay open, in seconds.
+    ///
+    /// Zero closes the window. 255 means *forever* in the protocol, which is a
+    /// footgun rather than a feature — a network left permanently open admits
+    /// anything that asks — so [`Self::for_seconds`] clamps to 254 and this
+    /// field is only 255 if a caller writes it deliberately.
+    pub duration: u8,
+}
+
+impl PermitJoining {
+    /// The largest duration that is not "forever".
+    pub const MAX_DURATION: u8 = 254;
+
+    /// Opens the window for `seconds`, clamped away from the forever value.
+    ///
+    /// A duration longer than the maximum is clamped rather than rejected: the
+    /// caller asked for "a long time", and 254 seconds is that answer, where
+    /// 255 is a different and far more dangerous one.
+    pub const fn for_seconds(seconds: u8) -> Self {
+        Self {
+            duration: if seconds > Self::MAX_DURATION {
+                Self::MAX_DURATION
+            } else {
+                seconds
+            },
+        }
+    }
+
+    /// Closes the window.
+    pub const fn close() -> Self {
+        Self { duration: 0 }
+    }
+}
+
+/// Whether the window changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PermitJoiningResponse {
+    /// The NCP's answer.
+    pub status: SlStatus,
+}
+
+impl EzspEncode for PermitJoining {
+    fn encode(&self, out: &mut Writer) -> Result<(), EzspError> {
+        out.u8(self.duration);
+        Ok(())
+    }
+}
+
+impl EzspDecode for PermitJoiningResponse {
+    fn decode(input: &mut Reader<'_>) -> Result<Self, EzspError> {
+        Ok(Self {
+            status: SlStatus::decode(input)?,
+        })
+    }
+}
+
+impl Command for PermitJoining {
+    type Response = PermitJoiningResponse;
+    const ID: FrameId = FrameId::PERMIT_JOINING;
+}
+
 /// `setConfigurationValue` — set a stack configuration item. Frame id `0x0053`.
 ///
 /// Must be sent before the network comes up; EZSP refuses afterwards.
@@ -569,6 +642,47 @@ mod tests {
                 0x00, 0x00, 0x06, 0x00, // inputs
                 0x19, 0x00, // outputs
             ]
+        );
+    }
+
+    #[test]
+    fn permit_joining_clamps_away_from_the_forever_value() {
+        // 255 means "open forever" in the protocol. A network left permanently
+        // open admits anything that asks, so a caller asking for a long window
+        // gets the longest bounded one rather than an unbounded one.
+        assert_eq!(PermitJoining::for_seconds(60).duration, 60);
+        assert_eq!(PermitJoining::for_seconds(254).duration, 254);
+        assert_eq!(
+            PermitJoining::for_seconds(255).duration,
+            254,
+            "255 must not be reachable by asking for a long time"
+        );
+        assert_eq!(PermitJoining::close().duration, 0);
+
+        // But it is still expressible deliberately, because refusing to encode
+        // a protocol-legal value would be this crate deciding policy.
+        let forever = PermitJoining { duration: 255 };
+        assert_eq!(encoded(&forever, V13), vec![0xff]);
+    }
+
+    #[test]
+    fn permit_joining_encodes_one_byte_and_reads_a_versioned_status() {
+        let command = PermitJoining::for_seconds(240);
+        assert_eq!(encoded(&command, V13), vec![0xf0]);
+
+        // One byte of status on v13, four on v14: a response decoded at the
+        // wrong width either leaves bytes over or reads past the end.
+        let mut v13 = Reader::new(&[0x00], V13);
+        assert!(
+            PermitJoiningResponse::decode(&mut v13)
+                .expect("v13")
+                .status
+                .is_ok()
+        );
+        let mut v14 = Reader::new(&[0x00], V14);
+        assert!(
+            PermitJoiningResponse::decode(&mut v14).is_err(),
+            "one byte cannot hold a v14 status, and that must be an error"
         );
     }
 
