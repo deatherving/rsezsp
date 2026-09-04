@@ -62,6 +62,17 @@ pub enum Callback {
         message_type: u8,
         /// The APS header.
         aps_frame: ApsFrame,
+        /// Link quality reported by the node that last relayed the message.
+        last_hop_lqi: u8,
+        /// Signal strength in dBm, and genuinely signed -- a healthy link is
+        /// a negative number.
+        last_hop_rssi: i8,
+        /// Who sent it.
+        sender: NodeId,
+        /// Index into the binding table, or `0xff` for none.
+        binding_index: u8,
+        /// Index into the address table, or `0xff` for none.
+        address_index: u8,
         /// The application payload.
         payload: Vec<u8>,
     },
@@ -72,10 +83,20 @@ pub enum Callback {
     /// (delivery failed) for a frame sent to a sleepy device that was not
     /// polling.
     MessageSent {
-        /// The tag the send command carried.
+        /// Unicast, broadcast or multicast.
+        message_type: u8,
+        /// The destination for a direct unicast, or a table index otherwise.
+        /// Unspecified for multicasts and broadcasts.
+        index_or_destination: u16,
+        /// The APS header the message was sent with.
+        aps_frame: ApsFrame,
+        /// The tag the send command carried, which is how a caller matches
+        /// this report to the message it sent.
         message_tag: u16,
         /// Whether it was delivered.
         status: SlStatus,
+        /// The message as sent.
+        payload: Vec<u8>,
     },
 
     /// A callback this build does not decode.
@@ -116,6 +137,9 @@ impl Callback {
                 parent_node_id: NodeId::decode(&mut input)?,
             }),
             FrameId::MESSAGE_SENT_HANDLER => {
+                let message_type = input.u8()?;
+                let index_or_destination = input.u16()?;
+                let aps_frame = ApsFrame::decode(&mut input)?;
                 // The tag width follows the same boundary as the send command
                 // that set it: one byte below EZSP 14, two at or above.
                 let message_tag = if version.has_wide_message_tag() {
@@ -124,18 +148,28 @@ impl Callback {
                     u16::from(input.u8()?)
                 };
                 Ok(Self::MessageSent {
+                    message_type,
+                    index_or_destination,
+                    aps_frame,
                     message_tag,
                     status: SlStatus::decode(&mut input)?,
+                    payload: input.length_prefixed()?.to_vec(),
                 })
             }
             FrameId::INCOMING_MESSAGE_HANDLER => Ok(Self::IncomingMessage {
                 message_type: input.u8()?,
                 aps_frame: ApsFrame::decode(&mut input)?,
-                // Everything after the header. Length-prefixed forms differ
-                // between firmware builds, so the remainder is taken whole
-                // rather than trusting a length this build might read at the
-                // wrong offset.
-                payload: input.take_rest().to_vec(),
+                last_hop_lqi: input.u8()?,
+                #[allow(clippy::cast_possible_wrap)]
+                last_hop_rssi: input.u8()? as i8,
+                sender: NodeId::decode(&mut input)?,
+                binding_index: input.u8()?,
+                address_index: input.u8()?,
+                // Length-prefixed, and the prefix is load-bearing: some
+                // firmware appends a source-route-overhead byte after the
+                // payload. Taking the rest of the frame instead would fold
+                // that byte into the application message.
+                payload: input.length_prefixed()?.to_vec(),
             }),
             _ => Ok(Self::Unknown {
                 frame_id,
@@ -159,6 +193,7 @@ impl Callback {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::aps::ApsOptions;
 
     const V13: ProtocolVersion = ProtocolVersion::new(0x0d);
 
@@ -205,36 +240,75 @@ mod tests {
     }
 
     #[test]
-    fn a_message_sent_tag_follows_the_version_boundary() {
-        // The tag width must match the send command that set it, or the status
-        // is read from the tag's second byte.
-        let narrow = [0x02, 0x66];
+    fn a_message_sent_report_is_read_from_the_right_offsets() {
+        // This frame reports the send of a genOnOff command to 0x3a41 with
+        // tag 1. An earlier decoder started at the message tag, so it read the
+        // message *type* as the tag and the low byte of the destination
+        // address as the status -- reporting "not delivered: 0x41" for a
+        // message whose real status was never looked at. Both wrong values
+        // were entirely plausible, which is why this asserts on offsets rather
+        // than on a round trip.
+        let bytes = [
+            0x00, // direct unicast
+            0x41, 0x3a, // destination 0x3a41
+            0x04, 0x01, 0x06, 0x00, 0x01, 0x01, 0x40, 0x01, 0x00, 0x00, 0xda, // APS
+            0x01, // message tag, as supplied to sendUnicast
+            0x00, // status
+            0x03, 0x01, 0x42, 0x01, // the ZCL bytes that were sent
+        ];
+
         let decoded =
-            Callback::decode(FrameId::MESSAGE_SENT_HANDLER, &narrow, V13).expect("v13 decodes");
+            Callback::decode(FrameId::MESSAGE_SENT_HANDLER, &bytes, V13).expect("v13 decodes");
         assert_eq!(
             decoded,
             Callback::MessageSent {
-                message_tag: 0x02,
-                // 102: delivery failed, as observed for a frame sent to a
-                // sleepy device that was not polling.
-                status: SlStatus(102),
+                message_type: 0,
+                index_or_destination: 0x3a41,
+                aps_frame: ApsFrame {
+                    profile_id: 0x0104,
+                    cluster_id: 0x0006,
+                    source_endpoint: 1,
+                    destination_endpoint: 1,
+                    options: ApsOptions(0x0140),
+                    group_id: 0,
+                    sequence: 0xda,
+                },
+                message_tag: 1,
+                status: SlStatus::OK,
+                payload: vec![0x01, 0x42, 0x01],
             }
         );
+    }
 
-        let wide = [0x02, 0x00, 0x66, 0x00, 0x00, 0x00];
+    #[test]
+    fn a_message_sent_tag_and_status_widen_together_at_ezsp_fourteen() {
+        // Both fields cross the same boundary, and they are adjacent: getting
+        // one right and the other wrong misaligns everything after them.
+        let mut wide = vec![0x00, 0x41, 0x3a];
+        wide.extend_from_slice(&[
+            0x04, 0x01, 0x06, 0x00, 0x01, 0x01, 0x40, 0x01, 0x00, 0x00, 0xda,
+        ]);
+        wide.extend_from_slice(&[0x01, 0x00]); // two-byte tag
+        wide.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // four-byte status
+        wide.extend_from_slice(&[0x00]); // empty payload
+
         let decoded = Callback::decode(
             FrameId::MESSAGE_SENT_HANDLER,
             &wide,
             ProtocolVersion::new(0x0e),
         )
         .expect("v14 decodes");
-        assert_eq!(
-            decoded,
-            Callback::MessageSent {
-                message_tag: 0x0002,
-                status: SlStatus(0x66),
-            }
-        );
+        let Callback::MessageSent {
+            message_tag,
+            status,
+            payload,
+            ..
+        } = decoded
+        else {
+            panic!("expected a message-sent report, got {decoded:?}");
+        };
+        assert_eq!((message_tag, status), (1, SlStatus::OK));
+        assert!(payload.is_empty());
     }
 
     #[test]
@@ -266,23 +340,51 @@ mod tests {
     }
 
     #[test]
-    fn an_incoming_message_takes_its_payload_whole() {
-        let mut parameters = vec![0x00];
-        parameters.extend_from_slice(&[
-            0x00, 0x00, 0x04, 0x80, 0x00, 0x00, 0x40, 0x01, 0x00, 0x00, 0x27,
-        ]);
-        parameters.extend_from_slice(&[0x01, 0x02, 0x03]);
+    fn an_incoming_message_decodes_a_real_capture() {
+        // Captured from the valve on a Sonoff ZBDongle-E at EZSP 13. The seven
+        // bytes between the APS frame and the payload are why this test
+        // exists: an earlier decoder took everything after the APS header as
+        // the payload, so LQI, RSSI, the sender, two table indices and the
+        // length prefix were all silently prepended to the ZCL message.
+        let bytes = [
+            0x00, // unicast
+            0x04, 0x01, 0x11, 0xfc, 0x01, 0x01, 0x40, 0x01, 0x00, 0x00, 0x28, // APS
+            0xff, // LQI
+            0xe2, // RSSI, -30 dBm
+            0x41, 0x3a, // sender 0x3a41
+            0xff, 0xff, // no binding, no address table entry
+            0x1e, // 30 bytes follow
+            0x18, 0xd6, 0x0a, 0x1f, 0x50, 0x48, 0x20, 0x15, 0x00, 0x02, 0x00, 0x01, 0x00, 0x32,
+            0x2d, 0xc3, 0xf1, 0x32, 0x2d, 0xc6, 0x49, 0x32, 0x2d, 0xc4, 0x0b, 0x01, 0x00, 0x00,
+            0x00, 0x00,
+        ];
 
-        let callback =
-            Callback::decode(FrameId::INCOMING_MESSAGE_HANDLER, &parameters, V13).expect("decodes");
-        match callback {
-            Callback::IncomingMessage {
-                aps_frame, payload, ..
-            } => {
-                assert_eq!(aps_frame.cluster_id, 0x8004);
-                assert_eq!(payload, vec![0x01, 0x02, 0x03]);
-            }
-            other => panic!("expected an incoming message, got {other:?}"),
-        }
+        let decoded =
+            Callback::decode(FrameId::INCOMING_MESSAGE_HANDLER, &bytes, V13).expect("decodes");
+        let Callback::IncomingMessage {
+            aps_frame,
+            last_hop_lqi,
+            last_hop_rssi,
+            sender,
+            binding_index,
+            address_index,
+            payload,
+            ..
+        } = decoded
+        else {
+            panic!("expected an incoming message, got {decoded:?}");
+        };
+
+        assert_eq!(sender, NodeId(0x3a41));
+        assert_eq!(aps_frame.cluster_id, 0xfc11, "the Sonoff custom cluster");
+        assert_eq!(last_hop_lqi, 0xff);
+        assert_eq!(last_hop_rssi, -30, "RSSI is signed; read as u8 this is 226");
+        assert_eq!((binding_index, address_index), (0xff, 0xff));
+        assert_eq!(payload.len(), 30);
+        assert_eq!(
+            payload.first().copied(),
+            Some(0x18),
+            "the payload must start at the ZCL frame control byte, not at the LQI"
+        );
     }
 }

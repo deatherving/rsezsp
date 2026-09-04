@@ -25,7 +25,7 @@ ZDO interview logic, no device definitions, no MQTT.
 
 ## Status
 
-Milestone 1 is confirmed on real hardware:
+Milestones 1 and 2 are confirmed on real hardware:
 
 | step | result |
 |---|---|
@@ -41,11 +41,15 @@ Milestone 1 is confirmed on real hardware:
 | `importTransientKey` | **PASS** |
 | `permitJoining` | **PASS** — 240s window |
 | **a real device joined** | **PASS** — `trustCenterJoin` for `0xa4c138142d62ffff` |
+| `sendUnicast` | **PASS** — accepted, APS sequence returned |
+| `messageSentHandler` callback | **PASS** — delivered, tag and destination match the send |
+| **the device physically actuated** | **PASS** — a `genOnOff` command opened and closed a real water valve |
 
-Coordinator bringup passes **8/8**, and with `--permit-join` a real device
-joins and its `trustCenterJoin` callback decodes: **10/10**. Not yet attempted
-on hardware: sending a unicast to the joined device, and recovery across a host
-restart. See [Hardware validation](#hardware-validation).
+Coordinator bringup passes **8/8**; with `--permit-join` a real device joins
+and its `trustCenterJoin` callback decodes; with `--onoff` a command reaches
+that device and the delivery confirmation decodes: **10/10**. Not yet attempted
+on hardware: recovery across a host restart. See
+[Hardware validation](#hardware-validation).
 
 ## Two properties the design is built around
 
@@ -81,15 +85,15 @@ keep it true.
 | `networkInit` | `0x0017` | confirmed |
 | `getEui64` | `0x0026` | confirmed |
 | `permitJoining` | `0x0022` | confirmed |
-| `sendUnicast` | `0x0034` | not yet |
+| `sendUnicast` | `0x0034` | confirmed |
 | `setConfigurationValue` | `0x0053` | confirmed |
 | `setPolicy` | `0x0055` | confirmed |
 | `importTransientKey` | `0x0111` | confirmed |
 
 ### Callbacks
 
-`stackStatusHandler` (confirmed), `trustCenterJoinHandler` (confirmed),
-`incomingMessageHandler`, `messageSentHandler`. A callback this build does not
+`stackStatusHandler`, `trustCenterJoinHandler`, `incomingMessageHandler` and
+`messageSentHandler`, all confirmed on hardware. A callback this build does not
 decode is carried through as `Callback::Unknown` with its bytes intact rather
 than guessed at.
 
@@ -105,7 +109,7 @@ suppression, sequence rollover, and recovery after a corrupt frame.
 support without a device to test against would be a guess presented as a
 feature.
 
-## Three bugs real hardware found
+## Five bugs real hardware found
 
 Unit tests and fuzzing did not find any of these. Each is now a permanent
 regression test in `tests/hardware_regression.rs`.
@@ -129,14 +133,35 @@ defaults `STACK_PROFILE` to `0`, and the stack will not adopt a stored ZigBee
 Pro network until it is `2`. Found by running a known-good implementation
 against the same dongle seconds later and comparing.
 
+**Two callbacks were decoded from the wrong offsets, and both looked fine.**
+`incomingMessageHandler` carries seven bytes of radio metadata between the APS
+header and the application payload — LQI, RSSI, the sender, two table indices
+and a length prefix. The decoder took everything after the APS header as the
+payload, so all seven were handed to the caller as the start of the ZCL
+message. Nothing failed: the frame parsed, the payload was non-empty, and its
+first byte was a plausible ZCL frame control value. It was caught only because
+the sender's address, `0x3a41`, was legible in the middle of a payload hex
+dump.
+
+`messageSentHandler` was worse. Its decoder started at the message tag, eleven
+bytes early, so it read the message *type* as the tag and the low byte of the
+destination address as the status. The destination was `0x3a41`, so a
+successfully delivered message was reported as failure status `0x41` — and the
+example dutifully printed "not delivered".
+
+Both had unit tests, and both tests passed, because the tests asserted against
+bytes assembled from the same wrong belief as the decoder. That is the specific
+failure `CONTRIBUTING.md` warns about, and writing it there did not stop it
+happening; only the device did.
+
 ## Verification
 
 | | |
 |---|---|
-| unit and integration tests | **114** |
+| unit and integration tests | **128** |
 | fuzz targets | 4 |
 | fuzz executions to date | ~89.2M, no crashes |
-| hardware-confirmed paths | bringup end to end, plus a real device join |
+| hardware-confirmed paths | bringup end to end, a real device join, and a command that actuated it |
 
 Fuzzing is part of the build rather than an occasional exercise. CI compiles
 every target and runs a 30-second smoke campaign on each; long campaigns are a
@@ -170,8 +195,10 @@ blocking syscall.
 | `getEui64`, `networkInit`, `setConfigurationValue` | yes | yes | yes |
 | `addEndpoint`, `setPolicy` | yes | yes | yes |
 | `permitJoining`, `importTransientKey` | yes | yes | yes |
-| `sendUnicast` | yes | yes | **not yet** |
+| `sendUnicast` | yes | yes | yes |
+| callback decoding, all four | yes | yes | yes |
 | device join, commissioning | yes | — | yes |
+| a command reaching a device | yes | — | yes |
 | recovery across a host restart | — | — | **not yet** |
 
 A row is only marked hardware-confirmed if it ran against the dongle. "The
@@ -193,8 +220,14 @@ found. No GPL source was read or copied.
 
 ## Known limitations
 
-- Milestone 2 is half done: a device joins, but nothing has been sent to it
-  yet. Milestone 3 (restart recovery) is not started.
+- Milestone 3 (recovery across a host restart) is not started. In particular
+  nothing here reads the child table, so after a restart the host has no way to
+  learn a joined device's short address on its own — the address has to come
+  from a join callback or from the caller.
+- The `messageSentHandler` and `incomingMessageHandler` field order is
+  confirmed on EZSP 13 only. Field *widths* above 14 follow the boundaries this
+  crate models, but whether those callbacks reorder their fields at 14 has not
+  been verified against either a device or a reference.
 - One command in flight at a time. EZSP over ASH has a small window and the NCP
   answers in order, so pipelining would buy little and cost certainty about
   which frame answers which command.

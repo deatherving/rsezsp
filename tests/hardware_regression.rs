@@ -16,6 +16,7 @@ use rsezsp::ezsp::codec::{EzspDecode, Reader};
 use rsezsp::ezsp::command::{GetEui64Response, NetworkInitResponse, VersionResponse};
 use rsezsp::ezsp::frame::{HeaderFormat, parse};
 use rsezsp::ezsp::{Direction, FrameId, ProtocolVersion};
+use rsezsp::types::network::NodeId;
 use rsezsp::types::status::SlStatus;
 
 const V13: ProtocolVersion = ProtocolVersion::new(0x0d);
@@ -211,4 +212,87 @@ fn the_rstack_that_ends_the_reset_handshake_decodes() {
     let wire = encode(&frame).expect("encodes");
     let mut decoder = Decoder::new();
     assert_eq!(decoder.feed(&wire), vec![Decoded::Frame(frame)]);
+}
+
+#[test]
+fn an_incoming_message_from_the_valve_keeps_its_payload_separate_from_the_radio_metadata() {
+    // The valve reporting on the Sonoff manufacturer cluster, captured while
+    // the coordinator was idle.
+    //
+    // The bug: the decoder took everything after the APS header as the
+    // application payload. Seven bytes of radio metadata sit between them --
+    // LQI, RSSI, the sender, two table indices and a length prefix -- and all
+    // seven were being handed to the caller as the start of the ZCL message.
+    // Nothing failed: the frame parsed, the payload was non-empty, and the
+    // first byte was a plausible ZCL frame control value.
+    let parameters = [
+        0x00, // unicast
+        0x04, 0x01, 0x11, 0xfc, 0x01, 0x01, 0x40, 0x01, 0x00, 0x00, 0x28, // APS
+        0xff, 0xe2, // LQI 255, RSSI -30 dBm
+        0x41, 0x3a, // sender 0x3a41
+        0xff, 0xff, // no binding, no address table entry
+        0x1e, // 30 bytes of payload follow
+        0x18, 0xd6, 0x0a, 0x1f, 0x50, 0x48, 0x20, 0x15, 0x00, 0x02, 0x00, 0x01, 0x00, 0x32, 0x2d,
+        0xc3, 0xf1, 0x32, 0x2d, 0xc6, 0x49, 0x32, 0x2d, 0xc4, 0x0b, 0x01, 0x00, 0x00, 0x00, 0x00,
+    ];
+
+    let callback = Callback::decode(FrameId::INCOMING_MESSAGE_HANDLER, &parameters, V13)
+        .expect("the capture must decode");
+    let Callback::IncomingMessage {
+        sender,
+        last_hop_rssi,
+        payload,
+        ..
+    } = callback
+    else {
+        panic!("expected an incoming message, got {callback:?}");
+    };
+
+    assert_eq!(sender, NodeId(0x3a41), "the valve");
+    assert_eq!(last_hop_rssi, -30, "signed; as u8 this reads 226");
+    assert_eq!(payload.len(), 30, "exactly what the length prefix promised");
+    assert_eq!(
+        payload.first().copied(),
+        Some(0x18),
+        "a ZCL frame control byte, not the LQI that used to be here"
+    );
+}
+
+#[test]
+fn the_message_sent_report_for_a_delivered_unicast_decodes_as_captured() {
+    // The confirmation for a genOnOff command that physically actuated the
+    // valve. Every field is cross-checkable against the send that produced it,
+    // which is what makes this capture worth keeping: destination 0x3a41, the
+    // APS sequence the send command returned, and the tag the host supplied.
+    //
+    // The bug: the decoder started at the message tag, eleven bytes early. It
+    // read the message type as the tag and the low byte of the destination
+    // address as the status -- and 0x3a41 has a low byte of 0x41, so a
+    // successful delivery was reported as failure status 0x41.
+    let parameters = [
+        0x00, // direct unicast
+        0x41, 0x3a, // destination 0x3a41
+        0x04, 0x01, 0x06, 0x00, 0x01, 0x01, 0x40, 0x01, 0x00, 0x00, 0x9b, // APS, sequence 155
+        0x01, // the tag the host supplied
+        0x00, // delivered
+        0x00, // no payload echoed back
+    ];
+
+    let callback = Callback::decode(FrameId::MESSAGE_SENT_HANDLER, &parameters, V13)
+        .expect("the capture must decode");
+    let Callback::MessageSent {
+        index_or_destination,
+        aps_frame,
+        message_tag,
+        status,
+        ..
+    } = callback
+    else {
+        panic!("expected a message-sent report, got {callback:?}");
+    };
+
+    assert_eq!(index_or_destination, 0x3a41);
+    assert_eq!(aps_frame.sequence, 155, "as returned by sendUnicast");
+    assert_eq!(message_tag, 1, "read as 0 when the offsets were wrong");
+    assert!(status.is_ok(), "read as 0x41 when the offsets were wrong");
 }

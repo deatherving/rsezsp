@@ -203,8 +203,22 @@ async fn register_endpoint<T: Transport>(ncp: &mut Ncp<T>, step: &mut Checklist)
 /// only time they can be sent at all.
 async fn configure_stack<T: Transport>(ncp: &mut Ncp<T>, step: &mut Checklist) {
     let items = [
+        // Both are advertised in beacons and both must match what a joining
+        // device expects. The NCP defaults STACK_PROFILE to 0, which is not
+        // ZigBee Pro -- `networkInit` will not adopt a stored network until
+        // this is 2.
         (ConfigId::STACK_PROFILE, 2u16),
         (ConfigId::SECURITY_LEVEL, 5),
+        // How long the NCP holds a message for a sleeping child. A battery
+        // device is not listening when the unicast is sent; it hears the
+        // message the next time it polls its parent. The default is 3s, which
+        // is shorter than some devices' poll interval -- the send then reports
+        // success and the message is silently dropped before delivery.
+        (ConfigId::INDIRECT_TRANSMISSION_TIMEOUT, 30_000),
+        // How long a child may go quiet before the NCP ages it out of the
+        // child table. Once that happens its short address is gone and the
+        // device has to rejoin, so this wants to outlive a host restart.
+        (ConfigId::END_DEVICE_POLL_TIMEOUT, 8),
     ];
     let mut ok = true;
     for (config_id, value) in items {
@@ -407,30 +421,43 @@ async fn send_onoff<T: Transport>(
     }
 
     // Delivery is reported separately and asynchronously. A sleepy device has
-    // to poll its parent before it hears anything, so this can take a moment
-    // -- and a failure here is the device not answering, not a bad frame.
+    // to poll its parent before it hears anything, so this can take a while --
+    // up to the indirect transmission timeout set during bringup.
+    //
+    // Polling has to continue until `messageSent` specifically arrives.
+    // `poll` returns on the first callback of any kind, and other callbacks
+    // are genuinely in flight here: `networkInit` produces a `stackStatus`
+    // that is only observed once something reads. Treating the first callback
+    // as the answer reports whatever happened to arrive first.
     println!("   waiting for messageSent...");
-    match ncp.poll(Duration::from_secs(10)).await {
-        Ok(callbacks) if callbacks.is_empty() => {
-            step.fail(
-                "messageSent callback",
-                "nothing within 10s (a sleepy device may not have polled)",
-            );
-        }
-        Ok(callbacks) => {
-            for callback in &callbacks {
-                println!("   {callback:?}");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(40);
+    let mut outcome = None;
+    while outcome.is_none() && tokio::time::Instant::now() < deadline {
+        match ncp.poll(Duration::from_secs(5)).await {
+            Ok(callbacks) => {
+                for callback in callbacks {
+                    println!("   {callback:?}");
+                    if let Callback::MessageSent { status, .. } = callback {
+                        outcome = Some(status);
+                    }
+                }
             }
-            let delivered = callbacks
-                .iter()
-                .any(|c| matches!(c, Callback::MessageSent { status, .. } if status.is_ok()));
-            if delivered {
-                step.pass("messageSent callback (delivered)");
-            } else {
-                step.fail("messageSent callback", "reported a delivery failure");
+            Err(e) => {
+                step.fail("messageSent callback", &e.to_string());
+                return;
             }
         }
-        Err(e) => step.fail("messageSent callback", &e.to_string()),
+    }
+
+    match outcome {
+        Some(status) if status.is_ok() => step.pass("messageSent callback (delivered)"),
+        // A delivery failure is the device not answering, not a bad frame: the
+        // NCP built and transmitted the message and nothing acknowledged it.
+        Some(status) => step.fail("messageSent callback", &format!("not delivered: {status}")),
+        None => step.fail(
+            "messageSent callback",
+            "no messageSent within 40s (the device may never have polled)",
+        ),
     }
 }
 
