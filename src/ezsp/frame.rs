@@ -110,6 +110,31 @@ impl FrameId {
     }
 }
 
+impl FrameId {
+    /// Whether a frame with this id carries key material in its parameters.
+    ///
+    /// Used to keep keys out of logs. Frame payloads are logged at debug level
+    /// because a wire trace is the most useful thing a bug report can carry --
+    /// and `CONTRIBUTING.md` asks reporters for exactly that. For these four
+    /// the payload *is* the secret: an `exportKey` response is sixteen bytes of
+    /// network key, and `importTransientKey` and `setInitialSecurityState`
+    /// carry keys outbound.
+    ///
+    /// Erring towards redaction: a frame id wrongly listed here costs a little
+    /// debuggability, while one wrongly omitted publishes a network key in
+    /// whatever log the reporter pastes into a public issue.
+    #[must_use]
+    pub const fn carries_key_material(self) -> bool {
+        matches!(
+            self,
+            Self::EXPORT_KEY
+                | Self::IMPORT_TRANSIENT_KEY
+                | Self::SET_INITIAL_SECURITY_STATE
+                | Self::GET_NETWORK_KEY_INFO
+        )
+    }
+}
+
 impl core::fmt::Display for FrameId {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self.name() {

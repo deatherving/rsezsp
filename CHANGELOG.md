@@ -28,6 +28,17 @@ project "implemented" and "seen to work on a device" are different claims.
   the send that produced it.
 - Project scaffolding for outside contributions: issue and pull request
   templates, a code of conduct, a security policy, and this changelog.
+- Twelve further commands, driven by a real consumer rather than by working
+  through the specification: `setManufacturerCode`, `networkState`,
+  `formNetwork`, `getNetworkParameters`, `sendBroadcast`, `sendMulticast`,
+  `getConfigurationValue`, `setInitialSecurityState`, `clearTransientLinkKeys`,
+  `getValue`, `exportKey` and `getNetworkKeyInfo`. These are what
+  [`rszigbee`](https://github.com/deatherving/rszigbee) needs to run a
+  coordinator, and it now uses this crate as its EZSP transport.
+- `--close-join` in the `startup` example, which closes a join window and
+  clears the commissioning key. Opening a window without closing it leaves the
+  well-known `ZigBeeAlliance09` key valid indefinitely, which is the difference
+  between a window and an unlocked door.
 - `tests/extending_from_outside.rs`, which defines a command this crate does
   not implement from a *separate* crate and drives it through the runtime.
   `Command` is an ordinary public trait, so a user who needs a command nobody
@@ -40,6 +51,21 @@ project "implemented" and "seen to work on a device" are different claims.
 - A `cargo package` job in CI, which builds the crate from only the files that
   would be published. It catches an `exclude` entry that drops something the
   build needs — invisible locally, because the file is still on disk.
+
+### Security
+
+- **Frame logging published key material.** Every EZSP frame is logged at debug
+  level, and `CONTRIBUTING.md` asks bug reporters to attach that output. For
+  four frames the payload *is* the secret: an `exportKey` response is sixteen
+  bytes of network key, and `importTransientKey` and `setInitialSecurityState`
+  carry keys outbound. Filing a bug report would have published the reporter's
+  network key. Those frames now log their length only, decided from the pending
+  command so that a response which fails to parse is redacted too — precisely
+  the case whose bytes get pasted into an issue.
+
+  Worth noting how it survived: the key types redact in `Debug` and always did,
+  so every test of that passed. The leak was one layer below, in the raw bytes,
+  before anything had been decoded into a type that could redact itself.
 
 ### Fixed
 
