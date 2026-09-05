@@ -14,6 +14,19 @@ project "implemented" and "seen to work on a device" are different claims.
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-09-05
+
+No code changes. `0.1.0` recorded a source commit in its `.cargo_vcs_info.json`
+that no longer exists: the repository's history was rewritten shortly after
+publication to remove an email address that had leaked into commit metadata,
+which changed every commit hash. A published version is immutable, so the
+provenance of `0.1.0` cannot be corrected in place — this release records a
+commit that is actually reachable.
+
+`0.1.0` is left published rather than yanked. It is functionally identical and
+nothing depends on it by exact version; yanking would warn every existing
+lockfile for a metadata inaccuracy.
+
 ### Added
 
 - `Ncp::stack_version`, the NCP firmware's own version number from the
