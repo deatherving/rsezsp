@@ -39,10 +39,13 @@ step "packages for crates.io" cargo package --all-features --allow-dirty
 if [[ "$FAST" != "--fast" ]]; then
   # Compile-only. A long campaign is a separate, deliberate activity; a target
   # that stops building is a regression that should fail fast.
-  if command -v cargo-fuzz >/dev/null && rustup toolchain list | grep -q nightly; then
-    step "fuzz targets build" cargo +nightly fuzz build
+  # `--sanitizer none` keeps this on stable: ASan is the only part of
+  # cargo-fuzz that needs nightly, and it has almost nothing to find in a
+  # crate that forbids `unsafe`.
+  if command -v cargo-fuzz >/dev/null; then
+    step "fuzz targets build" cargo fuzz build --sanitizer none
   else
-    printf '\n\033[33mskip\033[0m fuzz build (needs nightly and cargo-fuzz)\n'
+    printf '\n\033[33mskip\033[0m fuzz build (cargo-fuzz not installed)\n'
   fi
 fi
 

@@ -312,13 +312,17 @@ report one.
 
 Fuzzing is part of the build rather than an occasional exercise. CI compiles
 every target and runs a 30-second smoke campaign on each; long campaigns are a
-separate, deliberate activity. Any crashing input worth keeping goes into
+separate, deliberate activity. **Everything runs on stable** -- `--sanitizer
+none` is what makes that possible, and it costs little, because this crate
+forbids `unsafe` and so AddressSanitizer has almost nothing to find. The
+fuzzer is here for panics and hangs on malformed input, which the lints forbid
+and libFuzzer finds either way. Any crashing input worth keeping goes into
 `tests/hardware_regression.rs`, where it runs on stable forever instead of only
 during a campaign.
 
 ```bash
 ./scripts/verify.sh              # everything CI runs, in CI's order
-cargo +nightly fuzz run ash_frame_decode -- -max_total_time=300
+cargo fuzz run ash_frame_decode --sanitizer none -- -max_total_time=300
 ```
 
 ## Hardware validation

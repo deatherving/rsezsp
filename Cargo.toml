@@ -20,8 +20,9 @@ exclude = ["/.github", "/scripts"]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
-# `fuzz` is its own crate: libFuzzer needs nightly, and the rest of the suite
-# deliberately stays on stable.
+# `fuzz` is its own crate: it depends on libfuzzer-sys and builds with
+# instrumentation flags that have no business in the library's own build. It
+# builds on stable, like everything else here.
 [workspace]
 exclude = ["fuzz"]
 
