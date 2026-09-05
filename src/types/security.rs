@@ -194,6 +194,12 @@ pub struct InitialSecurityBitmask(pub u16);
 impl InitialSecurityBitmask {
     /// A trust centre global link key is in use.
     pub const TRUST_CENTER_GLOBAL_LINK_KEY: Self = Self(0x0004);
+    /// The trust centre uses a hashed link key.
+    ///
+    /// Note this is `0x0084`, not a single bit: it implies the flags below it.
+    /// Writing `0x0080` here, on the assumption that every entry in a bitmask
+    /// is one bit, silently drops part of the configuration.
+    pub const TRUST_CENTER_USES_HASHED_LINK_KEY: Self = Self(0x0084);
     /// The preconfigured key is a network key, not a link key.
     pub const PRECONFIGURED_NETWORK_KEY_MODE: Self = Self(0x0008);
     /// `preconfigured_key` is set.
