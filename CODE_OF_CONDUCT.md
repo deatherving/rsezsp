@@ -52,14 +52,14 @@ asking is not, and it costs the project the next report.
 ## Enforcement
 
 Report unacceptable behaviour to the maintainers by opening a GitHub issue if
-it can be discussed publicly, or by contacting [@deatherving] directly if it
-cannot. All complaints will be reviewed and investigated promptly and fairly.
+it can be discussed publicly, or privately by email to
+<ervingzhou@gmail.com> if it cannot. All complaints will be reviewed and
+investigated promptly and fairly.
 
 Maintainers are obligated to respect the privacy and security of the reporter
 of any incident, and will remove, edit, or reject contributions that are not
 aligned with this Code of Conduct.
 
-[@deatherving]: https://github.com/deatherving
 
 ## Attribution
 
