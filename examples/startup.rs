@@ -3,6 +3,7 @@
 //! ```text
 //! cargo run --example startup -- /dev/ttyUSB0
 //! cargo run --example startup -- /dev/ttyUSB0 --permit-join
+//! cargo run --example startup -- /dev/ttyUSB0 --close-join
 //! cargo run --example startup -- /dev/ttyUSB0 --onoff 14913 on
 //! ```
 //!
@@ -28,8 +29,8 @@ use std::time::Duration;
 
 use rsezsp::ezsp::callback::Callback;
 use rsezsp::ezsp::command::{
-    AddEndpoint, GetEui64, ImportTransientKey, NetworkInit, PermitJoining, SendUnicast,
-    SetConfigurationValue, SetPolicy,
+    AddEndpoint, ClearTransientLinkKeys, GetEui64, ImportTransientKey, NetworkInit, PermitJoining,
+    SendUnicast, SetConfigurationValue, SetPolicy,
 };
 use rsezsp::transport::Transport;
 use rsezsp::transport::serial::{SerialSettings, SerialTransport};
@@ -48,9 +49,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = args
         .iter()
         .find(|a| !a.starts_with("--"))
-        .ok_or("usage: startup <serial-path> [--permit-join] [--onoff <nwk> on|off]")?
+        .ok_or(
+            "usage: startup <serial-path> [--permit-join] [--close-join] \
+             [--onoff <nwk> on|off]",
+        )?
         .clone();
     let permit_join = args.iter().any(|a| a == "--permit-join");
+    let close_join = args.iter().any(|a| a == "--close-join");
     // `--onoff <nwk> <on|off>`: the short address comes from a join callback,
     // which `--permit-join` prints.
     let onoff = args.iter().position(|a| a == "--onoff").and_then(|i| {
@@ -137,6 +142,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if permit_join {
         open_for_joining(&mut ncp, &mut step).await;
+    }
+
+    if close_join {
+        close_joining(&mut ncp, &mut step).await;
     }
 
     if let Some((node_id, on)) = onoff {
@@ -460,6 +469,31 @@ async fn send_onoff<T: Transport>(
             "messageSent callback",
             "no messageSent within 40s (the device may never have polled)",
         ),
+    }
+}
+
+/// Closes the join window and removes the commissioning key.
+///
+/// The other half of opening one. `permitJoining(0)` shuts the association
+/// window, but the transient link key stays installed and valid until it is
+/// cleared -- so a window that is only "closed" still leaves the well-known
+/// `ZigBeeAlliance09` key accepted, which is the difference between a window
+/// and an unlocked door.
+async fn close_joining<T: Transport>(ncp: &mut Ncp<T>, step: &mut Checklist) {
+    println!("\n=== closing the join window ===");
+
+    match ncp.command(PermitJoining { duration: 0 }).await {
+        Ok(response) if response.status.is_ok() => step.pass("permitJoining(0) (window closed)"),
+        Ok(response) => step.fail("permitJoining(0)", &response.status.to_string()),
+        Err(e) => step.fail("permitJoining(0)", &e.to_string()),
+    }
+
+    // Answers with no parameters at all, not even a status: the absence of an
+    // error is the whole result. A decoder expecting a status here would turn
+    // a perfectly good empty response into a truncation error.
+    match ncp.command(ClearTransientLinkKeys).await {
+        Ok(_) => step.pass("clearTransientLinkKeys"),
+        Err(e) => step.fail("clearTransientLinkKeys", &e.to_string()),
     }
 }
 

@@ -254,3 +254,66 @@ impl EzspEncode for InitialSecurityState {
         self.preconfigured_trust_center_eui64.encode(out)
     }
 }
+
+#[cfg(test)]
+mod redaction_tests {
+    use super::*;
+    use crate::ezsp::frame::FrameId;
+
+    #[test]
+    fn a_key_never_renders_its_bytes() {
+        // A structure containing a key ends up in a log line eventually. Both
+        // formatters have to redact, because `{:?}` and `{}` are both reached
+        // by ordinary tracing macros.
+        let key = SecurityKey::new([0xab; 16]);
+        for rendered in [format!("{key:?}"), format!("{key}")] {
+            assert!(!rendered.contains("ab"), "key bytes leaked: {rendered}");
+            assert!(rendered.contains("redacted"), "{rendered}");
+        }
+    }
+
+    #[test]
+    fn a_struct_containing_a_key_redacts_it_too() {
+        // The realistic path: nobody logs a bare key, they log the thing that
+        // holds one.
+        let state = InitialSecurityState {
+            bitmask: InitialSecurityBitmask::HAVE_NETWORK_KEY,
+            preconfigured_key: SecurityKey::new([0x11; 16]),
+            network_key: SecurityKey::new([0x22; 16]),
+            network_key_sequence_number: 0,
+            preconfigured_trust_center_eui64: Eui64::new(0),
+        };
+        let rendered = format!("{state:?}");
+        assert!(!rendered.contains("11"), "leaked: {rendered}");
+        assert!(!rendered.contains("22"), "leaked: {rendered}");
+    }
+
+    #[test]
+    fn every_frame_carrying_a_key_is_marked_for_redaction() {
+        // Frame payloads are logged at debug level, and CONTRIBUTING asks bug
+        // reporters to attach that output. For these the payload *is* the
+        // secret, so a miss here publishes a network key in a public issue.
+        for frame_id in [
+            FrameId::EXPORT_KEY,
+            FrameId::IMPORT_TRANSIENT_KEY,
+            FrameId::SET_INITIAL_SECURITY_STATE,
+            FrameId::GET_NETWORK_KEY_INFO,
+        ] {
+            assert!(
+                frame_id.carries_key_material(),
+                "{frame_id} carries key material and must be redacted in logs"
+            );
+        }
+
+        // And the ordinary ones are not redacted, because a wire trace that
+        // hides everything is no use in a bug report.
+        for frame_id in [
+            FrameId::VERSION,
+            FrameId::GET_EUI64,
+            FrameId::SEND_UNICAST,
+            FrameId::NETWORK_INIT,
+        ] {
+            assert!(!frame_id.carries_key_material(), "{frame_id}");
+        }
+    }
+}

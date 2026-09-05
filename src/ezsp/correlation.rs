@@ -125,6 +125,19 @@ impl Correlator {
         self.stale_frames
     }
 
+    /// The command currently awaiting a response, if any.
+    ///
+    /// Exposed so a caller can decide how to log an inbound frame *before*
+    /// parsing it -- which matters for responses carrying key material, where
+    /// the unparsed bytes are the secret.
+    #[must_use]
+    pub const fn pending_frame_id(&self) -> Option<FrameId> {
+        match &self.pending {
+            Some(pending) => Some(pending.frame_id),
+            None => None,
+        }
+    }
+
     /// Registers a command as outstanding and returns its sequence number.
     ///
     /// # Errors

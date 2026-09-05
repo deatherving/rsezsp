@@ -27,6 +27,12 @@ EZSP codec + correlation       ezsp::codec, ezsp::frame, ezsp::correlation
 This crate owns the host-to-NCP conversation and nothing above it. No ZCL, no
 ZDO interview logic, no device definitions, no MQTT.
 
+**It is a driver.** It carries EZSP frames and has no opinion about Zigbee. The
+distinction is not which layer of the stack a name comes from — it is who
+decides. An APS header is part of the frame this crate encodes, so `ApsFrame`
+belongs here; what goes *inside* that payload does not, and neither does the
+choice of when to send one. Nothing here should have an opinion about a device.
+
 ## Using it
 
 ```toml
@@ -136,6 +142,19 @@ that device and the delivery confirmation decodes: **10/10**. Not yet attempted
 on hardware: recovery across a host restart. See
 [Hardware validation](#hardware-validation).
 
+## It drives a real Zigbee stack
+
+[`rszigbee`](https://github.com/deatherving/rszigbee) uses this crate as its
+EZSP transport, having replaced its previous one. On the same dongle it brings
+a coordinator up, resumes a stored network, admits a device, interviews it over
+ZDO, resolves it against a device definition, binds, configures reporting, and
+controls it — a `genOnOff` command through this crate opens and closes a real
+water valve.
+
+That matters more than any test count: the command set here is the set a
+working Zigbee coordinator actually needs, and it is that because a working
+Zigbee coordinator needed it.
+
 ## Two properties the design is built around
 
 **The protocol version is part of the wire format.** Field widths change
@@ -206,7 +225,7 @@ suppression, sequence rollover, and recovery after a corrupt frame.
 support without a device to test against would be a guess presented as a
 feature.
 
-## Five bugs real hardware found
+## Six bugs real hardware found
 
 Unit tests and fuzzing did not find any of these. Each is now a permanent
 regression test in `tests/hardware_regression.rs`.
@@ -251,6 +270,37 @@ bytes assembled from the same wrong belief as the decoder. That is the specific
 failure `CONTRIBUTING.md` warns about, and writing it there did not stop it
 happening; only the device did.
 
+**Frame logging published key material.** Every EZSP frame is logged at debug
+level, because a wire trace is the most useful thing a bug report can carry —
+and `CONTRIBUTING.md` asks reporters for exactly that. For four frames the
+payload *is* the secret: an `exportKey` response is sixteen bytes of network
+key, and `importTransientKey` and `setInitialSecurityState` carry keys
+outbound. Filing a bug report would have published the reporter's network key.
+
+Found by reading the code rather than by running it, which is worth saying: the
+key types redact in `Debug` and always had, so every test of *that* passed. The
+leak was one layer below, in the raw bytes, before anything had been decoded
+into a type that could redact itself.
+
+## Security
+
+The threat model is untrusted input from the NCP. A Zigbee coordinator is
+reachable over the air by anything in radio range, and a malformed payload
+relayed by a device reaches these decoders.
+
+- **No `unsafe`**, forbidden at the crate level.
+- **No panics on NCP input.** No slice indexing, no `unwrap`, no arithmetic
+  that can wrap; the lints enforce it and relax only inside tests. A malformed
+  frame is a typed error.
+- **Key material is redacted** in `Debug`, in `Display`, and in frame logging,
+  with tests pinning all three.
+- **Bounded reads.** Length prefixes are checked against what is actually
+  present rather than trusted.
+
+Fuzzing is part of the build rather than an occasional exercise. See
+[SECURITY.md](SECURITY.md) for what counts as a security issue and how to
+report one.
+
 ## Verification
 
 | | |
@@ -293,9 +343,13 @@ blocking syscall.
 | `addEndpoint`, `setPolicy` | yes | yes | yes |
 | `permitJoining`, `importTransientKey` | yes | yes | yes |
 | `sendUnicast` | yes | yes | yes |
+| `sendBroadcast`, `sendMulticast` | yes | yes | **not yet** |
 | callback decoding, all four | yes | yes | yes |
 | device join, commissioning | yes | — | yes |
 | a command reaching a device | yes | — | yes |
+| network parameters, key export | yes | yes | yes |
+| forming a network | yes | — | **not yet** |
+| key material kept out of logs | yes | — | yes |
 | recovery across a host restart | — | — | **not yet** |
 
 A row is only marked hardware-confirmed if it ran against the dongle. "The
@@ -317,10 +371,13 @@ found. No GPL source was read or copied.
 
 ## Known limitations
 
-- Milestone 3 (recovery across a host restart) is not started. In particular
-  nothing here reads the child table, so after a restart the host has no way to
-  learn a joined device's short address on its own — the address has to come
-  from a join callback or from the caller.
+- Nothing here reads the child table, so after a host restart there is no way
+  to learn a joined device's short address from the NCP alone — it has to come
+  from a join callback or from the caller. `getChildData` is the missing piece
+  and is listed as a first task in `CONTRIBUTING.md`.
+- Broadcast and multicast sends are implemented and unit-tested but have not
+  been exercised against hardware; neither has forming a network, which is
+  deliberately the one operation this crate will not let you do by accident.
 - The `messageSentHandler` and `incomingMessageHandler` field order is
   confirmed on EZSP 13 only. Field *widths* above 14 follow the boundaries this
   crate models, but whether those callbacks reorder their fields at 14 has not
@@ -332,8 +389,10 @@ found. No GPL source was read or copied.
   and orphans every joined device if done by mistake.
 - ASH retransmission and the window are unit-tested but have not been provoked
   on hardware; nothing has dropped a frame yet.
-- Only one dongle and one firmware version have been tested. Reports from other
-  hardware are welcome — see `CONTRIBUTING.md`.
+- **Only one dongle and one firmware version have been tested.** Every
+  compatibility claim above rests on a single Sonoff ZBDongle-E running
+  EmberZNet 7.4.4. Reports from other hardware are the most useful thing anyone
+  can send — see `CONTRIBUTING.md`.
 - Statuses are carried as raw values rather than mapped between `EmberStatus`
   and `sl_status_t`. `is_ok()` behaves identically either way, which is what
   almost every caller needs, but a caller matching a specific non-zero status

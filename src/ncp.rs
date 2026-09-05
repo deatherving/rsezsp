@@ -287,12 +287,23 @@ impl<T: Transport> Ncp<T> {
             });
         }
 
-        tracing::debug!(
-            frame_id = %C::ID,
-            format = ?format,
-            bytes = ?bytes,
-            "sending EZSP frame"
-        );
+        if C::ID.carries_key_material() {
+            // The parameters are the secret. Logged by length so the exchange
+            // is still visible in a trace without the key being in it.
+            tracing::debug!(
+                frame_id = %C::ID,
+                format = ?format,
+                len = bytes.len(),
+                "sending EZSP frame (parameters redacted: carries key material)"
+            );
+        } else {
+            tracing::debug!(
+                frame_id = %C::ID,
+                format = ?format,
+                bytes = ?bytes,
+                "sending EZSP frame"
+            );
+        }
         if matches!(format, HeaderFormat::Legacy) {
             self.initial_version_sent = true;
         }
@@ -424,10 +435,26 @@ impl<T: Transport> Ncp<T> {
 
     /// Classifies one EZSP frame and files it.
     fn dispatch(&mut self, payload: &[u8]) {
-        tracing::debug!(bytes = ?payload, "received EZSP frame");
         // With nothing pending, anything arriving is a callback, and those
         // are extended once negotiation is done.
         let format = self.pending_format.unwrap_or(HeaderFormat::Extended);
+
+        // Redaction is decided from the *pending command*, not from the parsed
+        // frame: the frame has not been parsed yet, and a response that fails
+        // to parse would otherwise be logged in full -- which is precisely the
+        // case where the bytes get pasted into a bug report.
+        if self
+            .correlator
+            .pending_frame_id()
+            .is_some_and(FrameId::carries_key_material)
+        {
+            tracing::debug!(
+                len = payload.len(),
+                "received EZSP frame (redacted: answers a command carrying key material)"
+            );
+        } else {
+            tracing::debug!(bytes = ?payload, "received EZSP frame");
+        }
         let parsed = frame::parse(payload, format);
         let Ok(parsed) = parsed else {
             tracing::debug!("undecodable EZSP frame");
