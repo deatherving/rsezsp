@@ -56,14 +56,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@nightly
+      # Stable, like every other job. `cargo fuzz` defaults to
+      # AddressSanitizer, which needs `-Z sanitizer` and therefore nightly;
+      # `--sanitizer none` drops it and builds on stable. That costs very
+      # little here: this crate is pure Rust and forbids `unsafe`, so memory
+      # safety is already the compiler's guarantee and ASan has almost nothing
+      # to find. What the fuzzer is hunting is panics and hangs on malformed
+      # input -- which the lints forbid outright -- and libFuzzer finds those
+      # either way.
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-fuzz
       # Compile-only, plus a short smoke run. A target that stops building is
       # a regression worth failing on; a long campaign is a separate,
       # deliberate activity and does not belong on every push.
-      - run: cargo fuzz build
-      - run: cargo fuzz run ash_frame_decode -- -max_total_time=30
-      - run: cargo fuzz run ezsp_frame_decode -- -max_total_time=30
-      - run: cargo fuzz run ezsp_types_decode -- -max_total_time=30
-      - run: cargo fuzz run ezsp_callback_decode -- -max_total_time=30
+      - run: cargo fuzz build --sanitizer none
+      - run: cargo fuzz run ash_frame_decode --sanitizer none -- -max_total_time=30
+      - run: cargo fuzz run ezsp_frame_decode --sanitizer none -- -max_total_time=30
+      - run: cargo fuzz run ezsp_types_decode --sanitizer none -- -max_total_time=30
+      - run: cargo fuzz run ezsp_callback_decode --sanitizer none -- -max_total_time=30
